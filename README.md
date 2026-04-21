@@ -1,0 +1,112 @@
+# Git File Explorer Colors
+
+Color Obsidian's File Explorer from Git status so changed files and folders stand out at a glance without turning Obsidian into a full IDE.
+
+Git File Explorer Colors is a desktop-only, read-only Obsidian plugin for vaults that live inside a single Git repository. It colors file rows directly from Git status and rolls changed descendants up to folders using `deleted > modified > new` priority.
+
+![Git File Explorer Colors screenshot](assets/file-explorer-colors-screenshot.png)
+
+## What It Does
+
+- Colors new or untracked files in green
+- Colors modified files in muted orange
+- Colors deleted paths as a folder signal in muted red
+- Rolls descendant changes up to parent folders
+- Refreshes on vault create, modify, rename, and delete events
+- Includes a fallback polling refresh for external Git changes
+- Adds a manual `Refresh colors` command for recovery
+
+## Requirements
+
+- Obsidian desktop
+- `git` installed and available on your system path
+- A vault that is itself a Git repository, or a vault contained inside one single Git repository
+- Local filesystem access through Obsidian's desktop app
+
+This plugin does not stage, commit, or modify Git state. It only reads status and colors the File Explorer.
+
+## Status Mapping
+
+- `new`: untracked files and newly added files
+- `modified`: tracked files with content or metadata changes
+- `deleted`: deleted files, primarily shown through parent-folder rollups when the file row is no longer visible
+
+Folder priority is `deleted > modified > new`.
+
+## Installation
+
+### Community Plugins
+
+Once the plugin is approved in the Obsidian Community Plugins directory:
+
+1. Open `Settings -> Community plugins`
+2. If `Restricted mode` is still enabled for this vault, turn it off
+3. Browse for `Git File Explorer Colors`
+4. Install and enable it
+
+### Manual Install
+
+Until it is published, or if you want to install a specific build:
+
+1. Download `manifest.json`, `main.js`, and `styles.css` from a GitHub release
+2. Create this folder in your vault:
+   `.obsidian/plugins/git-file-explorer-colors/`
+3. Copy the three files into that folder
+4. Reload Obsidian and enable `Git File Explorer Colors`
+
+## Usage
+
+The plugin reads Git status from the current vault root, normalizes it to `new`, `modified`, and `deleted`, and applies those states to the File Explorer.
+
+- Files are colored from their direct Git status
+- Folders are colored from descendant changes
+- Deleted files typically show up as red parent folders, because the deleted file row itself no longer exists in the tree
+- External Git changes are picked up by the fallback timer or the `Refresh colors` command
+
+## Settings
+
+- `Color file rows`
+- `Color folder rows`
+- `New color`
+- `Modified color`
+- `Deleted color`
+- `Refresh interval`
+
+The default palette is intentionally muted so the explorer stays readable during normal note-taking.
+
+## Limitations
+
+- Desktop only
+- Single-repo scope for v1
+- Read-only Git integration
+- No staging or committing UI
+- No diff viewer
+- No mobile support
+- No multi-repo support inside one vault
+
+## Development
+
+```bash
+npm install
+npm run dev
+```
+
+Useful scripts:
+
+- `npm run build` builds a production release
+- `npm run check` runs the TypeScript check
+- `npm run test` runs status-model unit tests
+- `npm run validate` runs `check`, `test`, and `build`
+- `npm run sync:scratch` copies the built plugin into the local scratch vault in `tmp/scratch-vault`
+
+## Release
+
+For a Community Plugin release:
+
+1. Bump `manifest.json`, `package.json`, and `versions.json` as needed
+2. Run `npm run validate`
+3. Create a GitHub release whose tag exactly matches `manifest.json` `version`
+4. Upload `manifest.json`, `main.js`, and `styles.css` as release assets
+5. Submit the plugin to `obsidianmd/obsidian-releases`
+
+The release should upload `manifest.json`, `main.js`, and `styles.css` as GitHub release assets for Obsidian Community Plugin submission.
