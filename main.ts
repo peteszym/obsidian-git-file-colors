@@ -67,6 +67,7 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
   private refreshInFlight = false;
   private refreshQueued = false;
   private noticeQueued = false;
+  private lastAutomaticNoticeKey: string | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -211,6 +212,7 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
     try {
       do {
         this.refreshQueued = false;
+        const previousSnapshot = this.snapshot;
         const nextSnapshot = await this.provider.readStatus();
         this.snapshot = nextSnapshot;
         this.syncExplorerObservers();
@@ -218,6 +220,8 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
 
         if (showNotice) {
           this.showRefreshNotice(nextSnapshot);
+        } else {
+          this.maybeShowAutomaticIssueNotice(previousSnapshot, nextSnapshot);
         }
 
         showNotice = this.noticeQueued;
@@ -251,6 +255,23 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
         new Notice(snapshot.error ?? "Git colors refresh failed.");
         return;
     }
+  }
+
+  private maybeShowAutomaticIssueNotice(previousSnapshot: GitSnapshot, nextSnapshot: GitSnapshot): void {
+    if (nextSnapshot.availability === "ready") {
+      this.lastAutomaticNoticeKey = null;
+      return;
+    }
+
+    const nextNoticeKey = `${nextSnapshot.availability}:${nextSnapshot.error ?? ""}`;
+    const previousNoticeKey = `${previousSnapshot.availability}:${previousSnapshot.error ?? ""}`;
+
+    if (nextNoticeKey === previousNoticeKey || nextNoticeKey === this.lastAutomaticNoticeKey) {
+      return;
+    }
+
+    this.lastAutomaticNoticeKey = nextNoticeKey;
+    new Notice(getAutomaticIssueNoticeMessage(nextSnapshot), 12000);
   }
 
   private applyCssVariables(): void {
@@ -690,13 +711,13 @@ function snapshotInfoFromGitFailure(
 
     return {
       availability: "error",
-      error: error.stderr || error.message
+      error: normalizeGitFailureMessage(error.stderr || error.message)
     };
   }
 
   return {
     availability: "error",
-    error: error instanceof Error ? error.message : "Unknown Git error."
+    error: normalizeGitFailureMessage(error instanceof Error ? error.message : "Unknown Git error.")
   };
 }
 
@@ -713,6 +734,46 @@ function snapshotFromGitFailure(
 
 function isGitCommandFailure(error: unknown): error is GitCommandFailure {
   return error instanceof GitCommandFailure;
+}
+
+function getAutomaticIssueNoticeMessage(snapshot: GitSnapshot): string {
+  switch (snapshot.availability) {
+    case "git-unavailable":
+      return "Git File Explorer Colors: Git is not available to Obsidian on this machine.";
+    case "no-repo":
+      return "Git File Explorer Colors: this vault is not inside a Git repository.";
+    case "error":
+      return snapshot.error ?? "Git File Explorer Colors could not read Git status.";
+    case "ready":
+      return "Git colors refreshed.";
+  }
+}
+
+function normalizeGitFailureMessage(message: string): string {
+  const trimmed = message.trim();
+  if (!trimmed) {
+    return "Git command failed.";
+  }
+
+  const normalized = trimmed.toLowerCase();
+
+  if (
+    normalized.includes("xcode license") ||
+    normalized.includes("agree to the xcode") ||
+    normalized.includes("license agreements")
+  ) {
+    return "Git File Explorer Colors needs the Xcode license accepted. Open Terminal and run: sudo xcodebuild -license accept";
+  }
+
+  if (
+    normalized.includes("xcode-select") ||
+    normalized.includes("command line developer tools") ||
+    normalized.includes("developer tools were found")
+  ) {
+    return "Git File Explorer Colors needs Apple's Command Line Tools. Open Terminal and run: xcode-select --install";
+  }
+
+  return trimmed;
 }
 
 class GitCommandFailure extends Error {

@@ -1,6 +1,6 @@
 {
   "name": "git-file-explorer-colors",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Color Obsidian's File Explorer from Git status.",
   "main": "main.js",
   "scripts": {

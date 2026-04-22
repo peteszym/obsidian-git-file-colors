@@ -63,6 +63,30 @@ The plugin reads Git status from the current vault root, normalizes it to `new`,
 - Deleted files typically show up as red parent folders, because the deleted file row itself no longer exists in the tree
 - External Git changes are picked up by the fallback timer or the `Refresh colors` command
 
+## Troubleshooting
+
+If the plugin installs but no colors appear:
+
+1. Run `Refresh colors` from the command palette and read the notice text.
+2. Confirm the vault is inside a Git repository.
+3. Confirm `git --version` works in your system terminal.
+4. Fully quit and reopen Obsidian after installing Git.
+
+On macOS:
+
+- If the notice says the Xcode license must be accepted, run `sudo xcodebuild -license accept` in Terminal.
+- If the notice says Command Line Tools are missing, run `xcode-select --install`.
+
+On Windows:
+
+- Confirm `git --version` works in Command Prompt or PowerShell, not only in Git Bash.
+- If you just installed Git, fully quit and reopen Obsidian so it can pick up the updated `PATH`.
+
+On Linux:
+
+- Confirm Git is installed and `git --version` works in your terminal.
+- If Obsidian was installed through a sandboxed package such as Flatpak, access to the host `git` executable may require extra setup.
+
 ## Settings
 
 - `Color file rows`
