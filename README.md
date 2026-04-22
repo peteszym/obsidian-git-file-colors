@@ -1,6 +1,6 @@
-# Git File Explorer Colors
+# Obsidian Git File Explorer Colors
 
-Color Obsidian's File Explorer from Git status so changed files and folders stand out at a glance without turning Obsidian into a full IDE.
+Obsidian plugin for AI second-brain users that colors the File Explorer by Git status, helping you spot markdown changes instantly without turning Obsidian into a full IDE.
 
 Git File Explorer Colors is a desktop-only, read-only Obsidian plugin for vaults that live inside a single Git repository. It colors file rows directly from Git status and rolls changed descendants up to folders using `deleted > modified > new` priority.
 
