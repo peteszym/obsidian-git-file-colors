@@ -1,13 +1,18 @@
 import { execFile } from "child_process";
+import { RangeSetBuilder, StateEffect, StateField, type Extension } from "@codemirror/state";
+import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import {
   App,
   FileSystemAdapter,
+  MarkdownFileInfo,
   Notice,
   Plugin,
   PluginSettingTab,
   Setting,
-  WorkspaceLeaf
+  WorkspaceLeaf,
+  editorInfoField
 } from "obsidian";
+import { buildEditorLineDiff, markEntireFile, type EditorLineDiff, type EditorLineStatus } from "./src/editor-diff";
 import {
   applyPorcelainRecord,
   buildFolderStatuses,
@@ -23,6 +28,7 @@ type UnavailableSnapshot = Exclude<SnapshotAvailability, "ready">;
 interface GitFileColorsSettings {
   fileColoring: boolean;
   folderColoring: boolean;
+  editorLineMarkers: boolean;
   newColor: string;
   modifiedColor: string;
   deletedColor: string;
@@ -36,9 +42,23 @@ interface GitSnapshot {
   error: string | null;
 }
 
+interface GitEditorDiffSnapshot {
+  availability: SnapshotAvailability;
+  diff: EditorLineDiff;
+  error: string | null;
+}
+
+interface GitEditorBaseSnapshot {
+  availability: SnapshotAvailability;
+  baseType: "tracked" | "new";
+  baseText: string;
+  error: string | null;
+}
+
 const DEFAULT_SETTINGS: GitFileColorsSettings = {
   fileColoring: true,
   folderColoring: true,
+  editorLineMarkers: true,
   newColor: "#6bbf7d",
   modifiedColor: "#c8a15a",
   deletedColor: "#d16b6b",
@@ -61,6 +81,7 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
   private snapshot: GitSnapshot = createEmptySnapshot("no-repo");
   private provider = new GitStatusProvider(() => this.getVaultBasePath());
   private observerByLeaf = new Map<WorkspaceLeaf, MutationObserver>();
+  private editorDiffRefreshers = new Set<() => void>();
   private refreshIntervalId: number | null = null;
   private refreshTimeoutId: number | null = null;
   private domSyncTimeoutId: number | null = null;
@@ -72,6 +93,7 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
     this.applyCssVariables();
+    this.registerEditorExtension(createEditorDiffExtension(this));
 
     this.addCommand({
       id: "refresh-git-colors",
@@ -132,6 +154,7 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
     await this.saveData(this.settings);
     this.applyCssVariables();
     this.restartRefreshTimer();
+    this.refreshEditorDiffs();
   }
 
   async updateSettings(
@@ -217,6 +240,7 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
         this.snapshot = nextSnapshot;
         this.syncExplorerObservers();
         this.applySnapshotToExplorers();
+        this.refreshEditorDiffs();
 
         if (showNotice) {
           this.showRefreshNotice(nextSnapshot);
@@ -360,6 +384,23 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
       }
     }
   }
+
+  async readEditorBase(filePath: string): Promise<GitEditorBaseSnapshot> {
+    return this.provider.readEditorBase(filePath);
+  }
+
+  registerEditorDiffRefresher(refresher: () => void): () => void {
+    this.editorDiffRefreshers.add(refresher);
+    return () => {
+      this.editorDiffRefreshers.delete(refresher);
+    };
+  }
+
+  private refreshEditorDiffs(): void {
+    for (const refresher of this.editorDiffRefreshers) {
+      refresher();
+    }
+  }
 }
 
 class GitStatusProvider {
@@ -397,6 +438,44 @@ class GitStatusProvider {
       };
     } catch (error) {
       return snapshotFromGitFailure(error);
+    }
+  }
+
+  async readEditorBase(filePath: string): Promise<GitEditorBaseSnapshot> {
+    const normalizedFilePath = normalizeLogicalPath(filePath);
+    if (!normalizedFilePath) {
+      return createEmptyEditorBaseSnapshot("error", "tracked", "File path is unavailable.");
+    }
+
+    const vaultBasePath = this.getVaultBasePath();
+    if (!vaultBasePath) {
+      return createEmptyEditorBaseSnapshot("error", "tracked", "Vault path is unavailable.");
+    }
+
+    const repoInfo = await this.resolveRepoInfo(vaultBasePath);
+    if (repoInfo.availability !== "ready") {
+      return createEmptyEditorBaseSnapshot(repoInfo.availability, "tracked", repoInfo.error);
+    }
+
+    const { repoRoot, vaultPrefix } = repoInfo;
+    const repoRelativePath = toRepoRelativePath(normalizedFilePath, vaultPrefix);
+
+    try {
+      const output = await runGit(["show", `HEAD:${repoRelativePath}`], repoRoot);
+
+      return {
+        availability: "ready",
+        baseType: "tracked",
+        baseText: normalizeEditorText(output.toString("utf8")),
+        error: null
+      };
+    } catch (error) {
+      if (isMissingEditorBaseFailure(error)) {
+        return createEmptyEditorBaseSnapshot("ready", "new");
+      }
+
+      const info = snapshotInfoFromGitFailure(error);
+      return createEmptyEditorBaseSnapshot(info.availability, "tracked", info.error);
     }
   }
 
@@ -453,6 +532,15 @@ class GitFileColorsSettingTab extends PluginSettingTab {
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.settings.folderColoring).onChange(async (value) => {
           await this.plugin.updateSettings({ folderColoring: value });
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("Show editor line markers")
+      .setDesc("Highlight added, modified, and deleted lines in the Markdown editor.")
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.settings.editorLineMarkers).onChange(async (value) => {
+          await this.plugin.updateSettings({ editorLineMarkers: value });
         });
       });
 
@@ -540,12 +628,40 @@ function createEmptySnapshot(
   };
 }
 
+function createEmptyEditorDiffSnapshot(
+  availability: SnapshotAvailability,
+  error: string | null = null
+): GitEditorDiffSnapshot {
+  return {
+    availability,
+    diff: {
+      lineStatuses: new Map<number, EditorLineStatus>(),
+      deletedAnchors: []
+    },
+    error
+  };
+}
+
+function createEmptyEditorBaseSnapshot(
+  availability: SnapshotAvailability,
+  baseType: "tracked" | "new",
+  error: string | null = null
+): GitEditorBaseSnapshot {
+  return {
+    availability,
+    baseType,
+    baseText: "",
+    error
+  };
+}
+
 function normalizeSettings(input: unknown): GitFileColorsSettings {
   const data = typeof input === "object" && input !== null ? (input as Partial<GitFileColorsSettings>) : {};
 
   return {
     fileColoring: data.fileColoring ?? DEFAULT_SETTINGS.fileColoring,
     folderColoring: data.folderColoring ?? DEFAULT_SETTINGS.folderColoring,
+    editorLineMarkers: data.editorLineMarkers ?? DEFAULT_SETTINGS.editorLineMarkers,
     newColor: normalizeColorValue(data.newColor ?? DEFAULT_SETTINGS.newColor, DEFAULT_SETTINGS.newColor),
     modifiedColor: normalizeColorValue(
       data.modifiedColor ?? DEFAULT_SETTINGS.modifiedColor,
@@ -575,6 +691,18 @@ function normalizeColorValue(value: string, fallback: string): string {
 
   const trimmed = value.trim();
   return /^#[\da-fA-F]{6}$/.test(trimmed) ? trimmed : fallback;
+}
+
+function normalizeEditorText(value: string): string {
+  return value.replace(/\r\n?/g, "\n");
+}
+
+function toRepoRelativePath(vaultRelativePath: string, vaultPrefix: string): string {
+  if (!vaultPrefix) {
+    return vaultRelativePath;
+  }
+
+  return `${vaultPrefix}/${vaultRelativePath}`;
 }
 
 async function runGit(args: string[], cwd: string): Promise<Buffer> {
@@ -736,6 +864,22 @@ function isGitCommandFailure(error: unknown): error is GitCommandFailure {
   return error instanceof GitCommandFailure;
 }
 
+function isMissingEditorBaseFailure(error: unknown): boolean {
+  if (!isGitCommandFailure(error)) {
+    return false;
+  }
+
+  const stderr = (error.stderr || error.message).toLowerCase();
+
+  return (
+    stderr.includes("invalid object name 'head'") ||
+    stderr.includes("bad revision 'head'") ||
+    stderr.includes("unknown revision or path not in the working tree") ||
+    stderr.includes("does not exist in 'head'") ||
+    stderr.includes("exists on disk, but not in 'head'")
+  );
+}
+
 function getAutomaticIssueNoticeMessage(snapshot: GitSnapshot): string {
   switch (snapshot.availability) {
     case "git-unavailable":
@@ -787,5 +931,200 @@ class GitCommandFailure extends Error {
     this.codeValue = error.code;
     this.stdout = stdout;
     this.stderr = stderr;
+  }
+}
+
+const setEditorDiffEffect = StateEffect.define<GitEditorDiffSnapshot>();
+const editorDiffField = StateField.define<DecorationSet>({
+  create() {
+    return Decoration.none;
+  },
+  update(decorations, transaction) {
+    for (const effect of transaction.effects) {
+      if (effect.is(setEditorDiffEffect)) {
+        return buildEditorDiffDecorations(transaction.state, effect.value.diff);
+      }
+    }
+
+    if (transaction.docChanged) {
+      return decorations.map(transaction.changes);
+    }
+
+    return decorations;
+  },
+  provide: (field) => EditorView.decorations.from(field)
+});
+
+function createEditorDiffExtension(plugin: GitFileExplorerColorsPlugin): Extension {
+  return [
+    editorDiffField,
+    ViewPlugin.fromClass(
+      class GitEditorDiffView {
+        private removeRefresher: (() => void) | null = null;
+        private refreshTimeoutId: number | null = null;
+        private refreshRequestId = 0;
+        private currentFilePath: string | null = null;
+        private baseSnapshot: GitEditorBaseSnapshot | null = null;
+
+        constructor(private readonly view: EditorView) {
+          this.removeRefresher = plugin.registerEditorDiffRefresher(() => {
+            this.scheduleBaseRefresh(0);
+          });
+          this.currentFilePath = getEditorFilePath(view);
+          this.scheduleBaseRefresh(0);
+        }
+
+        update(update: ViewUpdate): void {
+          const nextFilePath = getEditorFilePath(update.view);
+          const fileChanged = nextFilePath !== this.currentFilePath;
+
+          if (fileChanged) {
+            this.currentFilePath = nextFilePath;
+          }
+
+          if (fileChanged) {
+            this.scheduleBaseRefresh(0);
+            return;
+          }
+
+          if (update.docChanged) {
+            this.scheduleRender(0);
+          }
+        }
+
+        destroy(): void {
+          if (this.refreshTimeoutId !== null) {
+            window.clearTimeout(this.refreshTimeoutId);
+            this.refreshTimeoutId = null;
+          }
+
+          this.removeRefresher?.();
+        }
+
+        private scheduleBaseRefresh(delayMs: number): void {
+          if (this.refreshTimeoutId !== null) {
+            window.clearTimeout(this.refreshTimeoutId);
+          }
+
+          this.refreshTimeoutId = window.setTimeout(() => {
+            this.refreshTimeoutId = null;
+            void this.refreshBase();
+          }, delayMs);
+        }
+
+        private scheduleRender(delayMs: number): void {
+          if (this.refreshTimeoutId !== null) {
+            window.clearTimeout(this.refreshTimeoutId);
+          }
+
+          this.refreshTimeoutId = window.setTimeout(() => {
+            this.refreshTimeoutId = null;
+            this.renderCurrentDiff();
+          }, delayMs);
+        }
+
+        private async refreshBase(): Promise<void> {
+          const filePath = getEditorFilePath(this.view);
+          const requestId = ++this.refreshRequestId;
+
+          if (!plugin.settings.editorLineMarkers || !filePath) {
+            this.baseSnapshot = null;
+            this.dispatchDiff(createEmptyEditorDiffSnapshot("ready"));
+            return;
+          }
+
+          const baseSnapshot = await plugin.readEditorBase(filePath);
+          if (requestId !== this.refreshRequestId) {
+            return;
+          }
+
+          this.baseSnapshot = baseSnapshot;
+          this.renderCurrentDiff();
+        }
+
+        private renderCurrentDiff(): void {
+          if (!plugin.settings.editorLineMarkers || !this.currentFilePath) {
+            this.dispatchDiff(createEmptyEditorDiffSnapshot("ready"));
+            return;
+          }
+
+          if (!this.baseSnapshot) {
+            this.dispatchDiff(createEmptyEditorDiffSnapshot("ready"));
+            return;
+          }
+
+          if (this.baseSnapshot.availability !== "ready") {
+            this.dispatchDiff(createEmptyEditorDiffSnapshot(this.baseSnapshot.availability, this.baseSnapshot.error));
+            return;
+          }
+
+          const diff =
+            this.baseSnapshot.baseType === "new"
+              ? markEntireFile(this.view.state.doc.lines, "new")
+              : buildEditorLineDiff(this.baseSnapshot.baseText, normalizeEditorText(this.view.state.doc.toString()));
+
+          this.dispatchDiff({
+            availability: "ready",
+            diff,
+            error: null
+          });
+        }
+
+        private dispatchDiff(snapshot: GitEditorDiffSnapshot): void {
+          this.view.dispatch({
+            effects: setEditorDiffEffect.of(snapshot)
+          });
+        }
+      }
+    )
+  ];
+}
+
+function getEditorFilePath(view: EditorView): string | null {
+  const info = view.state.field(editorInfoField, false) as MarkdownFileInfo | undefined;
+  return normalizeLogicalPath(info?.file?.path ?? "") || null;
+}
+
+function buildEditorDiffDecorations(state: EditorView["state"], diff: EditorLineDiff): DecorationSet {
+  const builder = new RangeSetBuilder<Decoration>();
+
+  for (const [lineNumber, status] of [...diff.lineStatuses.entries()].sort((a, b) => a[0] - b[0])) {
+    if (lineNumber < 1 || lineNumber > state.doc.lines) {
+      continue;
+    }
+
+    const line = state.doc.line(lineNumber);
+    builder.add(line.from, line.from, Decoration.line({ class: getEditorLineClass(status) }));
+  }
+
+  if (state.doc.lines <= 0) {
+    return builder.finish();
+  }
+
+  for (const anchor of diff.deletedAnchors) {
+    const line = anchor <= state.doc.lines ? state.doc.line(anchor) : state.doc.line(state.doc.lines);
+    builder.add(
+      line.from,
+      line.from,
+      Decoration.widget({
+        widget: new DeletedLineMarkerWidget(),
+        side: anchor > state.doc.lines ? 1 : -1
+      })
+    );
+  }
+
+  return builder.finish();
+}
+
+function getEditorLineClass(status: EditorLineStatus): string {
+  return status === "new" ? "ogfc-editor-line-new" : "ogfc-editor-line-modified";
+}
+
+class DeletedLineMarkerWidget extends WidgetType {
+  toDOM(): HTMLElement {
+    const marker = document.createElement("span");
+    marker.className = "ogfc-editor-line-deleted-marker";
+    marker.setAttribute("aria-hidden", "true");
+    return marker;
   }
 }
