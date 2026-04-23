@@ -440,7 +440,7 @@ class GitFileColorsSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Color file rows")
-      .setDesc("Apply Git colors to file rows in the File Explorer.")
+      .setDesc("Apply Git colors to file rows in the file explorer.")
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.settings.fileColoring).onChange(async (value) => {
           await this.plugin.updateSettings({ fileColoring: value });
