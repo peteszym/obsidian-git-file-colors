@@ -124,7 +124,7 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    const saved = await this.loadData();
+    const saved: unknown = await this.loadData();
     this.settings = normalizeSettings(saved);
   }
 
@@ -275,14 +275,14 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
   }
 
   private applyCssVariables(): void {
-    const root = document.body;
+    const root = activeDocument.body;
     root.style.setProperty("--ogfc-color-new", this.settings.newColor);
     root.style.setProperty("--ogfc-color-modified", this.settings.modifiedColor);
     root.style.setProperty("--ogfc-color-deleted", this.settings.deletedColor);
   }
 
   private clearCssVariables(): void {
-    const root = document.body;
+    const root = activeDocument.body;
     root.style.removeProperty("--ogfc-color-new");
     root.style.removeProperty("--ogfc-color-modified");
     root.style.removeProperty("--ogfc-color-deleted");

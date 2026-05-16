@@ -1,8 +1,9 @@
 {
   "name": "git-file-explorer-colors",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Color Obsidian's File Explorer from Git status.",
   "main": "main.js",
+  "packageManager": "npm@10.9.2",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production",
@@ -19,6 +20,11 @@
   ],
   "author": "Peter Szymczak",
   "license": "MIT",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
   "devDependencies": {
     "@types/node": "^22.14.1",
     "esbuild": "^0.25.2",

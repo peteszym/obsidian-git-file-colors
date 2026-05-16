@@ -4,16 +4,25 @@
   --ogfc-color-deleted: #d16b6b;
 }
 
-.workspace-leaf-content[data-type="file-explorer"] .ogfc-status-new {
-  color: var(--ogfc-color-new) !important;
+.workspace-leaf-content[data-type="file-explorer"] .tree-item-self.ogfc-status-new,
+.workspace-leaf-content[data-type="file-explorer"] .tree-item-inner.ogfc-status-new,
+.workspace-leaf-content[data-type="file-explorer"] .nav-file-title-content.ogfc-status-new,
+.workspace-leaf-content[data-type="file-explorer"] .nav-folder-title-content.ogfc-status-new {
+  color: var(--ogfc-color-new);
 }
 
-.workspace-leaf-content[data-type="file-explorer"] .ogfc-status-modified {
-  color: var(--ogfc-color-modified) !important;
+.workspace-leaf-content[data-type="file-explorer"] .tree-item-self.ogfc-status-modified,
+.workspace-leaf-content[data-type="file-explorer"] .tree-item-inner.ogfc-status-modified,
+.workspace-leaf-content[data-type="file-explorer"] .nav-file-title-content.ogfc-status-modified,
+.workspace-leaf-content[data-type="file-explorer"] .nav-folder-title-content.ogfc-status-modified {
+  color: var(--ogfc-color-modified);
 }
 
-.workspace-leaf-content[data-type="file-explorer"] .ogfc-status-deleted {
-  color: var(--ogfc-color-deleted) !important;
+.workspace-leaf-content[data-type="file-explorer"] .tree-item-self.ogfc-status-deleted,
+.workspace-leaf-content[data-type="file-explorer"] .tree-item-inner.ogfc-status-deleted,
+.workspace-leaf-content[data-type="file-explorer"] .nav-file-title-content.ogfc-status-deleted,
+.workspace-leaf-content[data-type="file-explorer"] .nav-folder-title-content.ogfc-status-deleted {
+  color: var(--ogfc-color-deleted);
 }
 
 .workspace-leaf-content[data-type="file-explorer"] .tree-item-self,
