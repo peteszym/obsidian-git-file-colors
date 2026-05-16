@@ -1,73 +1,97 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildEditorLineDiff, markEntireFile } from "../src/editor-diff";
+import { buildEditorLineDiffFromDiffText, createEmptyEditorLineDiff } from "../src/editor-diff";
 
-test("buildEditorLineDiff marks inserted lines as new", () => {
-  const diff = buildEditorLineDiff("one\ntwo\nthree", "one\ntwo\ninserted\nthree");
-
-  assert.deepEqual([...diff.lineStatuses.entries()], [[3, "new"]]);
-  assert.deepEqual(diff.deletedAnchors, []);
-});
-
-test("buildEditorLineDiff marks replaced lines as modified", () => {
-  const diff = buildEditorLineDiff("one\ntwo\nthree", "one\nupdated\nthree");
-
-  assert.deepEqual([...diff.lineStatuses.entries()], [[2, "modified"]]);
-  assert.deepEqual(diff.deletedAnchors, []);
-});
-
-test("buildEditorLineDiff marks replacement blocks with extra inserted lines as modified then new", () => {
-  const diff = buildEditorLineDiff("one\ntwo\nthree", "one\nupdated\nextra\nthree");
+test("pure addition hunks mark added lines as new", () => {
+  const diff = buildEditorLineDiffFromDiffText(
+    ["diff --git a/Test.md b/Test.md", "@@ -4,0 +4,2 @@", "+first", "+second"].join("\n"),
+    10
+  );
 
   assert.deepEqual([...diff.lineStatuses.entries()], [
-    [2, "modified"],
-    [3, "new"]
+    [4, "new"],
+    [5, "new"]
   ]);
   assert.deepEqual(diff.deletedAnchors, []);
 });
 
-test("buildEditorLineDiff emits deleted anchors for pure deletions", () => {
-  const diff = buildEditorLineDiff("one\ntwo\nthree", "one\nthree");
+test("mixed hunks mark added lines as modified", () => {
+  const diff = buildEditorLineDiffFromDiffText(
+    ["diff --git a/Test.md b/Test.md", "@@ -8,1 +8,1 @@", "-old", "+updated"].join("\n"),
+    12
+  );
 
-  assert.deepEqual([...diff.lineStatuses.entries()], []);
-  assert.deepEqual(diff.deletedAnchors, [2]);
+  assert.deepEqual([...diff.lineStatuses.entries()], [[8, "modified"]]);
+  assert.deepEqual(diff.deletedAnchors, []);
 });
 
-test("buildEditorLineDiff emits deleted anchors when a block deletes more lines than it inserts", () => {
-  const diff = buildEditorLineDiff("one\ntwo\nthree\nfour", "one\nupdated\nfour");
+test("mixed hunks with net additions still mark all added lines as modified", () => {
+  const diff = buildEditorLineDiffFromDiffText(
+    ["diff --git a/Test.md b/Test.md", "@@ -2,1 +2,2 @@", "-old", "+updated", "+extra"].join("\n"),
+    6
+  );
+
+  assert.deepEqual([...diff.lineStatuses.entries()], [
+    [2, "modified"],
+    [3, "modified"]
+  ]);
+  assert.deepEqual(diff.deletedAnchors, []);
+});
+
+test("pure deletion hunks emit deleted anchors", () => {
+  const diff = buildEditorLineDiffFromDiffText(
+    ["diff --git a/Test.md b/Test.md", "@@ -6,2 +6,0 @@", "-removed one", "-removed two"].join("\n"),
+    10
+  );
+
+  assert.deepEqual([...diff.lineStatuses.entries()], []);
+  assert.deepEqual(diff.deletedAnchors, [6]);
+});
+
+test("mixed hunks with net deletions emit a trailing deleted anchor", () => {
+  const diff = buildEditorLineDiffFromDiffText(
+    [
+      "diff --git a/Test.md b/Test.md",
+      "@@ -2,3 +2,1 @@",
+      "-removed one",
+      "-removed two",
+      "-removed three",
+      "+replacement"
+    ].join("\n"),
+    4
+  );
 
   assert.deepEqual([...diff.lineStatuses.entries()], [[2, "modified"]]);
   assert.deepEqual(diff.deletedAnchors, [3]);
 });
 
-test("buildEditorLineDiff ignores identical text", () => {
-  const diff = buildEditorLineDiff("one\ntwo", "one\ntwo");
+test("git-style mixed hunk colors all added lines in Smoke Test as modified", () => {
+  const diff = buildEditorLineDiffFromDiffText(
+    [
+      "diff --git a/Smoke Test.md b/Smoke Test.md",
+      "@@ -2 +1,0 @@",
+      "-",
+      "@@ -9 +8,3 @@ Use this vault to verify:",
+      "-- manual refresh recovers from external Git changes",
+      "+- manual refresh recovers from external Git changes",
+      "+",
+      "+sd"
+    ].join("\n"),
+    10
+  );
+
+  assert.deepEqual([...diff.lineStatuses.entries()], [
+    [8, "modified"],
+    [9, "modified"],
+    [10, "modified"]
+  ]);
+  assert.deepEqual(diff.deletedAnchors, [1]);
+});
+
+test("createEmptyEditorLineDiff returns a blank diff state", () => {
+  const diff = createEmptyEditorLineDiff();
 
   assert.deepEqual([...diff.lineStatuses.entries()], []);
-  assert.deepEqual(diff.deletedAnchors, []);
-});
-
-test("markEntireFile marks every line with the provided status", () => {
-  const diff = markEntireFile(3, "new");
-  assert.deepEqual([...diff.lineStatuses.entries()], [
-    [1, "new"],
-    [2, "new"],
-    [3, "new"]
-  ]);
-  assert.deepEqual(diff.deletedAnchors, []);
-});
-
-test("buildEditorLineDiff keeps modifications local when repeated lines exist", () => {
-  const diff = buildEditorLineDiff("- a\n- a\n- a\n", "- a\n- b\n- a\n");
-
-  assert.deepEqual([...diff.lineStatuses.entries()], [[2, "modified"]]);
-  assert.deepEqual(diff.deletedAnchors, []);
-});
-
-test("buildEditorLineDiff keeps duplicate-line markdown edits on the changed line", () => {
-  const diff = buildEditorLineDiff("# Home\n\n- item\n- item\n- item\n", "# Home\n\n- item\n- changed\n- item\n");
-
-  assert.deepEqual([...diff.lineStatuses.entries()], [[4, "modified"]]);
   assert.deepEqual(diff.deletedAnchors, []);
 });

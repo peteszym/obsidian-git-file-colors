@@ -1,6 +1,9 @@
 import { execFile } from "child_process";
-import { RangeSetBuilder, StateEffect, StateField, type Extension } from "@codemirror/state";
-import { Decoration, EditorView, ViewPlugin, WidgetType, type DecorationSet, type ViewUpdate } from "@codemirror/view";
+import { mkdtemp, rm, writeFile } from "fs/promises";
+import { tmpdir } from "os";
+import { join } from "path";
+import { Prec, StateEffect, StateField, type Extension } from "@codemirror/state";
+import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
 import {
   App,
   FileSystemAdapter,
@@ -12,7 +15,7 @@ import {
   WorkspaceLeaf,
   editorInfoField
 } from "obsidian";
-import { buildEditorLineDiff, markEntireFile, type EditorLineDiff, type EditorLineStatus } from "./src/editor-diff";
+import { buildEditorLineDiffFromDiffText, createEmptyEditorLineDiff, type EditorLineDiff, type EditorLineStatus } from "./src/editor-diff";
 import {
   applyPorcelainRecord,
   buildFolderStatuses,
@@ -39,12 +42,6 @@ interface GitSnapshot {
   availability: SnapshotAvailability;
   files: Map<string, GitUiStatus>;
   folders: Map<string, GitUiStatus>;
-  error: string | null;
-}
-
-interface GitEditorDiffSnapshot {
-  availability: SnapshotAvailability;
-  diff: EditorLineDiff;
   error: string | null;
 }
 
@@ -240,7 +237,6 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
         this.snapshot = nextSnapshot;
         this.syncExplorerObservers();
         this.applySnapshotToExplorers();
-        this.refreshEditorDiffs();
 
         if (showNotice) {
           this.showRefreshNotice(nextSnapshot);
@@ -383,6 +379,8 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
         applyStatusesToElements(containerEl, FILE_EXPLORER_PATH_SELECTOR, this.snapshot.folders);
       }
     }
+
+    this.refreshEditorDiffs();
   }
 
   async readEditorBase(filePath: string): Promise<GitEditorBaseSnapshot> {
@@ -519,7 +517,7 @@ class GitFileColorsSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Color file rows")
-      .setDesc("Apply Git colors to file rows in the File Explorer.")
+      .setDesc("Apply Git colors to file rows in the file explorer.")
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.settings.fileColoring).onChange(async (value) => {
           await this.plugin.updateSettings({ fileColoring: value });
@@ -536,8 +534,8 @@ class GitFileColorsSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName("Show editor line markers")
-      .setDesc("Highlight added, modified, and deleted lines in the Markdown editor.")
+      .setName("Show editor gutter markers")
+      .setDesc("Show Zed-style Git markers in the editor gutter. These markers use the same New, Modified, and Deleted colors as the File Explorer.")
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.settings.editorLineMarkers).onChange(async (value) => {
           await this.plugin.updateSettings({ editorLineMarkers: value });
@@ -547,7 +545,7 @@ class GitFileColorsSettingTab extends PluginSettingTab {
     this.addColorSetting(
       containerEl,
       "New color",
-      "Used for untracked and newly added files.",
+      "Shared green color for new files in the File Explorer and added lines in tracked-file gutter markers.",
       this.plugin.settings.newColor,
       async (value) => {
         await this.plugin.updateSettings({ newColor: normalizeColorValue(value, DEFAULT_SETTINGS.newColor) });
@@ -557,7 +555,7 @@ class GitFileColorsSettingTab extends PluginSettingTab {
     this.addColorSetting(
       containerEl,
       "Modified color",
-      "Used for tracked files with content or metadata changes.",
+      "Shared orange color for modified files in the File Explorer and modified lines in tracked-file gutter markers.",
       this.plugin.settings.modifiedColor,
       async (value) => {
         await this.plugin.updateSettings({
@@ -569,7 +567,7 @@ class GitFileColorsSettingTab extends PluginSettingTab {
     this.addColorSetting(
       containerEl,
       "Deleted color",
-      "Used for deleted file signals and affected parent folders.",
+      "Shared red color for deleted file signals in the File Explorer and deleted-line gutter markers.",
       this.plugin.settings.deletedColor,
       async (value) => {
         await this.plugin.updateSettings({
@@ -624,20 +622,6 @@ function createEmptySnapshot(
     availability,
     files: new Map<string, GitUiStatus>(),
     folders: new Map<string, GitUiStatus>(),
-    error
-  };
-}
-
-function createEmptyEditorDiffSnapshot(
-  availability: SnapshotAvailability,
-  error: string | null = null
-): GitEditorDiffSnapshot {
-  return {
-    availability,
-    diff: {
-      lineStatuses: new Map<number, EditorLineStatus>(),
-      deletedAnchors: []
-    },
     error
   };
 }
@@ -732,6 +716,64 @@ async function runGit(args: string[], cwd: string): Promise<Buffer> {
         }
 
         resolve(stdoutBuffer);
+      }
+    );
+  });
+}
+
+async function buildGitEditorDiff(baseText: string, currentText: string, lineCount: number): Promise<EditorLineDiff> {
+  const tempRoot = await mkdtemp(join(tmpdir(), "ogfc-diff-"));
+  const basePath = join(tempRoot, "base.md");
+  const currentPath = join(tempRoot, "current.md");
+
+  try {
+    await writeFile(basePath, baseText, "utf8");
+    await writeFile(currentPath, currentText, "utf8");
+
+    const diffText = await runGitNoIndexDiff(basePath, currentPath);
+    if (!diffText) {
+      return createEmptyEditorLineDiff();
+    }
+
+    return buildEditorLineDiffFromDiffText(diffText, lineCount);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+async function runGitNoIndexDiff(leftPath: string, rightPath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      "git",
+      ["diff", "--no-index", "--no-color", "--unified=0", "--", leftPath, rightPath],
+      {
+        cwd: tmpdir(),
+        env: createGitEnv(),
+        encoding: "buffer",
+        maxBuffer: 8 * 1024 * 1024
+      },
+      (error, stdout, stderr) => {
+        const stdoutBuffer = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "");
+        const stderrBuffer = Buffer.isBuffer(stderr) ? stderr : Buffer.from(stderr ?? "");
+
+        if (error) {
+          const code = (error as Error & { code?: string | number }).code;
+          if (code === 1) {
+            resolve(stdoutBuffer.toString("utf8"));
+            return;
+          }
+
+          reject(
+            new GitCommandFailure(
+              error as Error & { code?: string | number },
+              stdoutBuffer.toString("utf8"),
+              stderrBuffer.toString("utf8")
+            )
+          );
+          return;
+        }
+
+        resolve(stdoutBuffer.toString("utf8"));
       }
     );
   });
@@ -934,35 +976,45 @@ class GitCommandFailure extends Error {
   }
 }
 
-const setEditorDiffEffect = StateEffect.define<GitEditorDiffSnapshot>();
-const editorDiffField = StateField.define<DecorationSet>({
+const setEditorDiffEffect = StateEffect.define<EditorLineDiff>();
+const editorDiffField = StateField.define<EditorLineDiff>({
   create() {
-    return Decoration.none;
+    return createEmptyEditorLineDiff();
   },
-  update(decorations, transaction) {
+  update(diff, transaction) {
     for (const effect of transaction.effects) {
       if (effect.is(setEditorDiffEffect)) {
-        return buildEditorDiffDecorations(transaction.state, effect.value.diff);
+        return effect.value;
       }
     }
 
-    if (transaction.docChanged) {
-      return decorations.map(transaction.changes);
-    }
-
-    return decorations;
-  },
-  provide: (field) => EditorView.decorations.from(field)
+    return diff;
+  }
 });
 
 function createEditorDiffExtension(plugin: GitFileExplorerColorsPlugin): Extension {
+  const editorDiffGutter = gutter({
+    class: "ogfc-change-gutter",
+    lineMarker(view, line) {
+      return buildGutterMarker(view, view.state.doc.lineAt(line.from).number);
+    },
+    lineMarkerChange(update) {
+      return update.docChanged || update.transactions.some((transaction) => transaction.effects.some((effect) => effect.is(setEditorDiffEffect)));
+    },
+    initialSpacer() {
+      return new ChangeGutterMarker({});
+    }
+  });
+
   return [
     editorDiffField,
+    Prec.low(editorDiffGutter),
     ViewPlugin.fromClass(
       class GitEditorDiffView {
         private removeRefresher: (() => void) | null = null;
         private refreshTimeoutId: number | null = null;
         private refreshRequestId = 0;
+        private renderRequestId = 0;
         private currentFilePath: string | null = null;
         private baseSnapshot: GitEditorBaseSnapshot | null = null;
 
@@ -980,9 +1032,6 @@ function createEditorDiffExtension(plugin: GitFileExplorerColorsPlugin): Extensi
 
           if (fileChanged) {
             this.currentFilePath = nextFilePath;
-          }
-
-          if (fileChanged) {
             this.scheduleBaseRefresh(0);
             return;
           }
@@ -1002,24 +1051,25 @@ function createEditorDiffExtension(plugin: GitFileExplorerColorsPlugin): Extensi
         }
 
         private scheduleBaseRefresh(delayMs: number): void {
-          if (this.refreshTimeoutId !== null) {
-            window.clearTimeout(this.refreshTimeoutId);
-          }
-
-          this.refreshTimeoutId = window.setTimeout(() => {
-            this.refreshTimeoutId = null;
+          this.schedule(delayMs, () => {
             void this.refreshBase();
-          }, delayMs);
+          });
         }
 
         private scheduleRender(delayMs: number): void {
+          this.schedule(delayMs, () => {
+            void this.renderCurrentDiff();
+          });
+        }
+
+        private schedule(delayMs: number, callback: () => void): void {
           if (this.refreshTimeoutId !== null) {
             window.clearTimeout(this.refreshTimeoutId);
           }
 
           this.refreshTimeoutId = window.setTimeout(() => {
             this.refreshTimeoutId = null;
-            this.renderCurrentDiff();
+            callback();
           }, delayMs);
         }
 
@@ -1029,7 +1079,7 @@ function createEditorDiffExtension(plugin: GitFileExplorerColorsPlugin): Extensi
 
           if (!plugin.settings.editorLineMarkers || !filePath) {
             this.baseSnapshot = null;
-            this.dispatchDiff(createEmptyEditorDiffSnapshot("ready"));
+            this.dispatchDiff(createEmptyEditorLineDiff());
             return;
           }
 
@@ -1039,40 +1089,38 @@ function createEditorDiffExtension(plugin: GitFileExplorerColorsPlugin): Extensi
           }
 
           this.baseSnapshot = baseSnapshot;
-          this.renderCurrentDiff();
+          void this.renderCurrentDiff();
         }
 
-        private renderCurrentDiff(): void {
-          if (!plugin.settings.editorLineMarkers || !this.currentFilePath) {
-            this.dispatchDiff(createEmptyEditorDiffSnapshot("ready"));
-            return;
-          }
+        private async renderCurrentDiff(): Promise<void> {
+          const requestId = ++this.renderRequestId;
 
-          if (!this.baseSnapshot) {
-            this.dispatchDiff(createEmptyEditorDiffSnapshot("ready"));
+          if (!plugin.settings.editorLineMarkers || !this.currentFilePath || !this.baseSnapshot) {
+            this.dispatchDiff(createEmptyEditorLineDiff());
             return;
           }
 
           if (this.baseSnapshot.availability !== "ready") {
-            this.dispatchDiff(createEmptyEditorDiffSnapshot(this.baseSnapshot.availability, this.baseSnapshot.error));
+            this.dispatchDiff(createEmptyEditorLineDiff());
             return;
           }
 
-          const diff =
-            this.baseSnapshot.baseType === "new"
-              ? markEntireFile(this.view.state.doc.lines, "new")
-              : buildEditorLineDiff(this.baseSnapshot.baseText, normalizeEditorText(this.view.state.doc.toString()));
+          let diff = createEmptyEditorLineDiff();
+          if (this.baseSnapshot.baseType !== "new") {
+            const currentText = normalizeEditorText(this.view.state.doc.toString());
+            diff = await buildGitEditorDiff(this.baseSnapshot.baseText, currentText, this.view.state.doc.lines);
+          }
 
-          this.dispatchDiff({
-            availability: "ready",
-            diff,
-            error: null
-          });
+          if (requestId !== this.renderRequestId) {
+            return;
+          }
+
+          this.dispatchDiff(diff);
         }
 
-        private dispatchDiff(snapshot: GitEditorDiffSnapshot): void {
+        private dispatchDiff(diff: EditorLineDiff): void {
           this.view.dispatch({
-            effects: setEditorDiffEffect.of(snapshot)
+            effects: setEditorDiffEffect.of(diff)
           });
         }
       }
@@ -1085,46 +1133,69 @@ function getEditorFilePath(view: EditorView): string | null {
   return normalizeLogicalPath(info?.file?.path ?? "") || null;
 }
 
-function buildEditorDiffDecorations(state: EditorView["state"], diff: EditorLineDiff): DecorationSet {
-  const builder = new RangeSetBuilder<Decoration>();
+function buildGutterMarker(view: EditorView, lineNumber: number): GutterMarker | null {
+  const diff = view.state.field(editorDiffField, false);
+  if (!diff) {
+    return null;
+  }
 
-  for (const [lineNumber, status] of [...diff.lineStatuses.entries()].sort((a, b) => a[0] - b[0])) {
-    if (lineNumber < 1 || lineNumber > state.doc.lines) {
-      continue;
+  const deletedAnchors = new Set(diff.deletedAnchors);
+  const status = diff.lineStatuses.get(lineNumber);
+  const deletedBefore = deletedAnchors.has(lineNumber);
+  const deletedAfter = lineNumber === view.state.doc.lines && deletedAnchors.has(lineNumber + 1);
+
+  if (!status && !deletedBefore && !deletedAfter) {
+    return null;
+  }
+
+  return new ChangeGutterMarker({
+    status,
+    deletedBefore,
+    deletedAfter
+  });
+}
+
+class ChangeGutterMarker extends GutterMarker {
+  constructor(
+    private readonly options: {
+      status?: EditorLineStatus;
+      deletedBefore?: boolean;
+      deletedAfter?: boolean;
     }
-
-    const line = state.doc.line(lineNumber);
-    builder.add(line.from, line.from, Decoration.line({ class: getEditorLineClass(status) }));
+  ) {
+    super();
   }
 
-  if (state.doc.lines <= 0) {
-    return builder.finish();
-  }
-
-  for (const anchor of diff.deletedAnchors) {
-    const line = anchor <= state.doc.lines ? state.doc.line(anchor) : state.doc.line(state.doc.lines);
-    builder.add(
-      line.from,
-      line.from,
-      Decoration.widget({
-        widget: new DeletedLineMarkerWidget(),
-        side: anchor > state.doc.lines ? 1 : -1
-      })
+  eq(other: ChangeGutterMarker): boolean {
+    return (
+      this.options.status === other.options.status &&
+      this.options.deletedBefore === other.options.deletedBefore &&
+      this.options.deletedAfter === other.options.deletedAfter
     );
   }
 
-  return builder.finish();
-}
-
-function getEditorLineClass(status: EditorLineStatus): string {
-  return status === "new" ? "ogfc-editor-line-new" : "ogfc-editor-line-modified";
-}
-
-class DeletedLineMarkerWidget extends WidgetType {
   toDOM(): HTMLElement {
     const marker = document.createElement("span");
-    marker.className = "ogfc-editor-line-deleted-marker";
-    marker.setAttribute("aria-hidden", "true");
+    marker.className = "ogfc-change-marker";
+
+    if (this.options.status) {
+      const lineMarker = document.createElement("span");
+      lineMarker.className = `ogfc-change-marker-line ogfc-change-marker-line-${this.options.status}`;
+      marker.appendChild(lineMarker);
+    }
+
+    if (this.options.deletedBefore) {
+      const triangle = document.createElement("span");
+      triangle.className = "ogfc-change-marker-deleted ogfc-change-marker-deleted-before";
+      marker.appendChild(triangle);
+    }
+
+    if (this.options.deletedAfter) {
+      const triangle = document.createElement("span");
+      triangle.className = "ogfc-change-marker-deleted ogfc-change-marker-deleted-after";
+      marker.appendChild(triangle);
+    }
+
     return marker;
   }
 }

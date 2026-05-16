@@ -23,37 +23,59 @@
   transition: color 140ms ease;
 }
 
-.markdown-source-view.mod-cm6 .cm-line {
-  position: relative;
+.markdown-source-view.mod-cm6 .cm-gutter.ogfc-change-gutter {
+  width: 0;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  overflow: visible;
 }
 
-.markdown-source-view.mod-cm6 .cm-line.ogfc-editor-line-new::before,
-.markdown-source-view.mod-cm6 .cm-line.ogfc-editor-line-modified::before {
-  content: "";
+.markdown-source-view.mod-cm6 .cm-gutter.ogfc-change-gutter .cm-gutterElement {
+  position: relative;
+  padding: 0;
+  overflow: visible;
+  width: 0;
+}
+
+.markdown-source-view.mod-cm6 .ogfc-change-marker {
+  position: relative;
+  display: block;
+  width: 0;
+  height: 100%;
+  overflow: visible;
+}
+
+.markdown-source-view.mod-cm6 .ogfc-change-marker-line {
   position: absolute;
-  left: -12px;
+  right: 10px;
   top: -1px;
   bottom: -1px;
-  width: 3px;
-  pointer-events: none;
+  width: 2px;
 }
 
-.markdown-source-view.mod-cm6 .cm-line.ogfc-editor-line-new::before {
+.markdown-source-view.mod-cm6 .ogfc-change-marker-line-new {
   background: var(--ogfc-color-new);
 }
 
-.markdown-source-view.mod-cm6 .cm-line.ogfc-editor-line-modified::before {
+.markdown-source-view.mod-cm6 .ogfc-change-marker-line-modified {
   background: var(--ogfc-color-modified);
 }
 
-.markdown-source-view.mod-cm6 .ogfc-editor-line-deleted-marker {
+.markdown-source-view.mod-cm6 .ogfc-change-marker-deleted {
   position: absolute;
-  left: -12px;
-  top: calc(50% - 7px);
+  right: 9px;
   width: 0;
   height: 0;
   border-top: 7px solid transparent;
   border-bottom: 7px solid transparent;
   border-left: 7px solid var(--ogfc-color-deleted);
-  pointer-events: none;
+}
+
+.markdown-source-view.mod-cm6 .ogfc-change-marker-deleted-before {
+  top: -7px;
+}
+
+.markdown-source-view.mod-cm6 .ogfc-change-marker-deleted-after {
+  bottom: -7px;
 }

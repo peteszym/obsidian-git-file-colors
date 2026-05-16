@@ -11,7 +11,7 @@ Git File Explorer Colors is a desktop-only, read-only Obsidian plugin for vaults
 - Colors new or untracked files in green
 - Colors modified files in muted orange
 - Colors deleted paths as a folder signal in muted red
-- Adds Zed-style line markers in the editor for added, modified, and deleted lines
+- Adds Zed-style editor gutter markers for added, modified, and deleted lines in tracked files
 - Rolls descendant changes up to parent folders
 - Refreshes on vault create, modify, rename, and delete events
 - Includes a fallback polling refresh for external Git changes
@@ -62,7 +62,7 @@ The plugin reads Git status from the current vault root, normalizes it to `new`,
 - Files are colored from their direct Git status
 - Folders are colored from descendant changes
 - Deleted files typically show up as red parent folders, because the deleted file row itself no longer exists in the tree
-- In Markdown source view, added lines get a green side marker, modified lines get a muted orange marker, and deleted lines show a red triangle at the deletion point
+- In the editor gutter, tracked added lines show green, modified lines show orange, and deleted lines show a red triangle at the deletion point
 - External Git changes are picked up by the fallback timer or the `Refresh colors` command
 
 ## Troubleshooting
@@ -93,13 +93,13 @@ On Linux:
 
 - `Color file rows`
 - `Color folder rows`
-- `Show editor line markers`
+- `Show editor gutter markers`
 - `New color`
 - `Modified color`
 - `Deleted color`
 - `Refresh interval`
 
-The default palette is intentionally muted so the explorer stays readable during normal note-taking.
+The default palette is intentionally muted so the explorer stays readable during normal note-taking. The `New color`, `Modified color`, and `Deleted color` settings are shared across both the File Explorer and the editor gutter markers.
 
 ## Limitations
 
