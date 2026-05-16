@@ -7,7 +7,7 @@
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production",
     "check": "tsc --noEmit",
-    "test": "tsc -p tsconfig.tests.json && node --test \"build-tests/tests/**/*.test.js\"",
+    "test": "tsc -p tsconfig.tests.json && node --test build-tests/tests/status-model.test.js",
     "sync:scratch": "bash scripts/sync-scratch-vault.sh",
     "validate": "npm run check && npm run test && npm run build",
     "version": "node version-bump.mjs && git add manifest.json versions.json"

@@ -1,21 +1,13 @@
 import { execFile } from "child_process";
-import { mkdtemp, rm, writeFile } from "fs/promises";
-import { tmpdir } from "os";
-import { join } from "path";
-import { Prec, StateEffect, StateField, type Extension } from "@codemirror/state";
-import { EditorView, GutterMarker, ViewPlugin, gutter, type ViewUpdate } from "@codemirror/view";
 import {
   App,
   FileSystemAdapter,
-  MarkdownFileInfo,
   Notice,
   Plugin,
   PluginSettingTab,
   Setting,
-  WorkspaceLeaf,
-  editorInfoField
+  WorkspaceLeaf
 } from "obsidian";
-import { buildEditorLineDiffFromDiffText, createEmptyEditorLineDiff, type EditorLineDiff, type EditorLineStatus } from "./src/editor-diff";
 import {
   applyPorcelainRecord,
   buildFolderStatuses,
@@ -31,7 +23,6 @@ type UnavailableSnapshot = Exclude<SnapshotAvailability, "ready">;
 interface GitFileColorsSettings {
   fileColoring: boolean;
   folderColoring: boolean;
-  editorLineMarkers: boolean;
   newColor: string;
   modifiedColor: string;
   deletedColor: string;
@@ -45,17 +36,9 @@ interface GitSnapshot {
   error: string | null;
 }
 
-interface GitEditorBaseSnapshot {
-  availability: SnapshotAvailability;
-  baseType: "tracked" | "new";
-  baseText: string;
-  error: string | null;
-}
-
 const DEFAULT_SETTINGS: GitFileColorsSettings = {
   fileColoring: true,
   folderColoring: true,
-  editorLineMarkers: true,
   newColor: "#6bbf7d",
   modifiedColor: "#c8a15a",
   deletedColor: "#d16b6b",
@@ -78,7 +61,6 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
   private snapshot: GitSnapshot = createEmptySnapshot("no-repo");
   private provider = new GitStatusProvider(() => this.getVaultBasePath());
   private observerByLeaf = new Map<WorkspaceLeaf, MutationObserver>();
-  private editorDiffRefreshers = new Set<() => void>();
   private refreshIntervalId: number | null = null;
   private refreshTimeoutId: number | null = null;
   private domSyncTimeoutId: number | null = null;
@@ -90,7 +72,6 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
     this.applyCssVariables();
-    this.registerEditorExtension(createEditorDiffExtension(this));
 
     this.addCommand({
       id: "refresh-git-colors",
@@ -151,7 +132,6 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
     await this.saveData(this.settings);
     this.applyCssVariables();
     this.restartRefreshTimer();
-    this.refreshEditorDiffs();
   }
 
   async updateSettings(
@@ -379,25 +359,6 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
         applyStatusesToElements(containerEl, FILE_EXPLORER_PATH_SELECTOR, this.snapshot.folders);
       }
     }
-
-    this.refreshEditorDiffs();
-  }
-
-  async readEditorBase(filePath: string): Promise<GitEditorBaseSnapshot> {
-    return this.provider.readEditorBase(filePath);
-  }
-
-  registerEditorDiffRefresher(refresher: () => void): () => void {
-    this.editorDiffRefreshers.add(refresher);
-    return () => {
-      this.editorDiffRefreshers.delete(refresher);
-    };
-  }
-
-  private refreshEditorDiffs(): void {
-    for (const refresher of this.editorDiffRefreshers) {
-      refresher();
-    }
   }
 }
 
@@ -436,44 +397,6 @@ class GitStatusProvider {
       };
     } catch (error) {
       return snapshotFromGitFailure(error);
-    }
-  }
-
-  async readEditorBase(filePath: string): Promise<GitEditorBaseSnapshot> {
-    const normalizedFilePath = normalizeLogicalPath(filePath);
-    if (!normalizedFilePath) {
-      return createEmptyEditorBaseSnapshot("error", "tracked", "File path is unavailable.");
-    }
-
-    const vaultBasePath = this.getVaultBasePath();
-    if (!vaultBasePath) {
-      return createEmptyEditorBaseSnapshot("error", "tracked", "Vault path is unavailable.");
-    }
-
-    const repoInfo = await this.resolveRepoInfo(vaultBasePath);
-    if (repoInfo.availability !== "ready") {
-      return createEmptyEditorBaseSnapshot(repoInfo.availability, "tracked", repoInfo.error);
-    }
-
-    const { repoRoot, vaultPrefix } = repoInfo;
-    const repoRelativePath = toRepoRelativePath(normalizedFilePath, vaultPrefix);
-
-    try {
-      const output = await runGit(["show", `HEAD:${repoRelativePath}`], repoRoot);
-
-      return {
-        availability: "ready",
-        baseType: "tracked",
-        baseText: normalizeEditorText(output.toString("utf8")),
-        error: null
-      };
-    } catch (error) {
-      if (isMissingEditorBaseFailure(error)) {
-        return createEmptyEditorBaseSnapshot("ready", "new");
-      }
-
-      const info = snapshotInfoFromGitFailure(error);
-      return createEmptyEditorBaseSnapshot(info.availability, "tracked", info.error);
     }
   }
 
@@ -533,19 +456,10 @@ class GitFileColorsSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl)
-      .setName("Show editor gutter markers")
-      .setDesc("Show Zed-style Git markers in the editor gutter. These markers use the same New, Modified, and Deleted colors as the File Explorer.")
-      .addToggle((toggle) => {
-        toggle.setValue(this.plugin.settings.editorLineMarkers).onChange(async (value) => {
-          await this.plugin.updateSettings({ editorLineMarkers: value });
-        });
-      });
-
     this.addColorSetting(
       containerEl,
       "New color",
-      "Shared green color for new files in the File Explorer and added lines in tracked-file gutter markers.",
+      "Used for untracked and newly added files.",
       this.plugin.settings.newColor,
       async (value) => {
         await this.plugin.updateSettings({ newColor: normalizeColorValue(value, DEFAULT_SETTINGS.newColor) });
@@ -555,7 +469,7 @@ class GitFileColorsSettingTab extends PluginSettingTab {
     this.addColorSetting(
       containerEl,
       "Modified color",
-      "Shared orange color for modified files in the File Explorer and modified lines in tracked-file gutter markers.",
+      "Used for tracked files with content or metadata changes.",
       this.plugin.settings.modifiedColor,
       async (value) => {
         await this.plugin.updateSettings({
@@ -567,7 +481,7 @@ class GitFileColorsSettingTab extends PluginSettingTab {
     this.addColorSetting(
       containerEl,
       "Deleted color",
-      "Shared red color for deleted file signals in the File Explorer and deleted-line gutter markers.",
+      "Used for deleted file signals and affected parent folders.",
       this.plugin.settings.deletedColor,
       async (value) => {
         await this.plugin.updateSettings({
@@ -626,26 +540,12 @@ function createEmptySnapshot(
   };
 }
 
-function createEmptyEditorBaseSnapshot(
-  availability: SnapshotAvailability,
-  baseType: "tracked" | "new",
-  error: string | null = null
-): GitEditorBaseSnapshot {
-  return {
-    availability,
-    baseType,
-    baseText: "",
-    error
-  };
-}
-
 function normalizeSettings(input: unknown): GitFileColorsSettings {
   const data = typeof input === "object" && input !== null ? (input as Partial<GitFileColorsSettings>) : {};
 
   return {
     fileColoring: data.fileColoring ?? DEFAULT_SETTINGS.fileColoring,
     folderColoring: data.folderColoring ?? DEFAULT_SETTINGS.folderColoring,
-    editorLineMarkers: data.editorLineMarkers ?? DEFAULT_SETTINGS.editorLineMarkers,
     newColor: normalizeColorValue(data.newColor ?? DEFAULT_SETTINGS.newColor, DEFAULT_SETTINGS.newColor),
     modifiedColor: normalizeColorValue(
       data.modifiedColor ?? DEFAULT_SETTINGS.modifiedColor,
@@ -677,18 +577,6 @@ function normalizeColorValue(value: string, fallback: string): string {
   return /^#[\da-fA-F]{6}$/.test(trimmed) ? trimmed : fallback;
 }
 
-function normalizeEditorText(value: string): string {
-  return value.replace(/\r\n?/g, "\n");
-}
-
-function toRepoRelativePath(vaultRelativePath: string, vaultPrefix: string): string {
-  if (!vaultPrefix) {
-    return vaultRelativePath;
-  }
-
-  return `${vaultPrefix}/${vaultRelativePath}`;
-}
-
 async function runGit(args: string[], cwd: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     execFile(
@@ -716,64 +604,6 @@ async function runGit(args: string[], cwd: string): Promise<Buffer> {
         }
 
         resolve(stdoutBuffer);
-      }
-    );
-  });
-}
-
-async function buildGitEditorDiff(baseText: string, currentText: string, lineCount: number): Promise<EditorLineDiff> {
-  const tempRoot = await mkdtemp(join(tmpdir(), "ogfc-diff-"));
-  const basePath = join(tempRoot, "base.md");
-  const currentPath = join(tempRoot, "current.md");
-
-  try {
-    await writeFile(basePath, baseText, "utf8");
-    await writeFile(currentPath, currentText, "utf8");
-
-    const diffText = await runGitNoIndexDiff(basePath, currentPath);
-    if (!diffText) {
-      return createEmptyEditorLineDiff();
-    }
-
-    return buildEditorLineDiffFromDiffText(diffText, lineCount);
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
-  }
-}
-
-async function runGitNoIndexDiff(leftPath: string, rightPath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "git",
-      ["diff", "--no-index", "--no-color", "--unified=0", "--", leftPath, rightPath],
-      {
-        cwd: tmpdir(),
-        env: createGitEnv(),
-        encoding: "buffer",
-        maxBuffer: 8 * 1024 * 1024
-      },
-      (error, stdout, stderr) => {
-        const stdoutBuffer = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout ?? "");
-        const stderrBuffer = Buffer.isBuffer(stderr) ? stderr : Buffer.from(stderr ?? "");
-
-        if (error) {
-          const code = (error as Error & { code?: string | number }).code;
-          if (code === 1) {
-            resolve(stdoutBuffer.toString("utf8"));
-            return;
-          }
-
-          reject(
-            new GitCommandFailure(
-              error as Error & { code?: string | number },
-              stdoutBuffer.toString("utf8"),
-              stderrBuffer.toString("utf8")
-            )
-          );
-          return;
-        }
-
-        resolve(stdoutBuffer.toString("utf8"));
       }
     );
   });
@@ -906,22 +736,6 @@ function isGitCommandFailure(error: unknown): error is GitCommandFailure {
   return error instanceof GitCommandFailure;
 }
 
-function isMissingEditorBaseFailure(error: unknown): boolean {
-  if (!isGitCommandFailure(error)) {
-    return false;
-  }
-
-  const stderr = (error.stderr || error.message).toLowerCase();
-
-  return (
-    stderr.includes("invalid object name 'head'") ||
-    stderr.includes("bad revision 'head'") ||
-    stderr.includes("unknown revision or path not in the working tree") ||
-    stderr.includes("does not exist in 'head'") ||
-    stderr.includes("exists on disk, but not in 'head'")
-  );
-}
-
 function getAutomaticIssueNoticeMessage(snapshot: GitSnapshot): string {
   switch (snapshot.availability) {
     case "git-unavailable":
@@ -973,229 +787,5 @@ class GitCommandFailure extends Error {
     this.codeValue = error.code;
     this.stdout = stdout;
     this.stderr = stderr;
-  }
-}
-
-const setEditorDiffEffect = StateEffect.define<EditorLineDiff>();
-const editorDiffField = StateField.define<EditorLineDiff>({
-  create() {
-    return createEmptyEditorLineDiff();
-  },
-  update(diff, transaction) {
-    for (const effect of transaction.effects) {
-      if (effect.is(setEditorDiffEffect)) {
-        return effect.value;
-      }
-    }
-
-    return diff;
-  }
-});
-
-function createEditorDiffExtension(plugin: GitFileExplorerColorsPlugin): Extension {
-  const editorDiffGutter = gutter({
-    class: "ogfc-change-gutter",
-    lineMarker(view, line) {
-      return buildGutterMarker(view, view.state.doc.lineAt(line.from).number);
-    },
-    lineMarkerChange(update) {
-      return update.docChanged || update.transactions.some((transaction) => transaction.effects.some((effect) => effect.is(setEditorDiffEffect)));
-    },
-    initialSpacer() {
-      return new ChangeGutterMarker({});
-    }
-  });
-
-  return [
-    editorDiffField,
-    Prec.low(editorDiffGutter),
-    ViewPlugin.fromClass(
-      class GitEditorDiffView {
-        private removeRefresher: (() => void) | null = null;
-        private refreshTimeoutId: number | null = null;
-        private refreshRequestId = 0;
-        private renderRequestId = 0;
-        private currentFilePath: string | null = null;
-        private baseSnapshot: GitEditorBaseSnapshot | null = null;
-
-        constructor(private readonly view: EditorView) {
-          this.removeRefresher = plugin.registerEditorDiffRefresher(() => {
-            this.scheduleBaseRefresh(0);
-          });
-          this.currentFilePath = getEditorFilePath(view);
-          this.scheduleBaseRefresh(0);
-        }
-
-        update(update: ViewUpdate): void {
-          const nextFilePath = getEditorFilePath(update.view);
-          const fileChanged = nextFilePath !== this.currentFilePath;
-
-          if (fileChanged) {
-            this.currentFilePath = nextFilePath;
-            this.scheduleBaseRefresh(0);
-            return;
-          }
-
-          if (update.docChanged) {
-            this.scheduleRender(0);
-          }
-        }
-
-        destroy(): void {
-          if (this.refreshTimeoutId !== null) {
-            window.clearTimeout(this.refreshTimeoutId);
-            this.refreshTimeoutId = null;
-          }
-
-          this.removeRefresher?.();
-        }
-
-        private scheduleBaseRefresh(delayMs: number): void {
-          this.schedule(delayMs, () => {
-            void this.refreshBase();
-          });
-        }
-
-        private scheduleRender(delayMs: number): void {
-          this.schedule(delayMs, () => {
-            void this.renderCurrentDiff();
-          });
-        }
-
-        private schedule(delayMs: number, callback: () => void): void {
-          if (this.refreshTimeoutId !== null) {
-            window.clearTimeout(this.refreshTimeoutId);
-          }
-
-          this.refreshTimeoutId = window.setTimeout(() => {
-            this.refreshTimeoutId = null;
-            callback();
-          }, delayMs);
-        }
-
-        private async refreshBase(): Promise<void> {
-          const filePath = getEditorFilePath(this.view);
-          const requestId = ++this.refreshRequestId;
-
-          if (!plugin.settings.editorLineMarkers || !filePath) {
-            this.baseSnapshot = null;
-            this.dispatchDiff(createEmptyEditorLineDiff());
-            return;
-          }
-
-          const baseSnapshot = await plugin.readEditorBase(filePath);
-          if (requestId !== this.refreshRequestId) {
-            return;
-          }
-
-          this.baseSnapshot = baseSnapshot;
-          void this.renderCurrentDiff();
-        }
-
-        private async renderCurrentDiff(): Promise<void> {
-          const requestId = ++this.renderRequestId;
-
-          if (!plugin.settings.editorLineMarkers || !this.currentFilePath || !this.baseSnapshot) {
-            this.dispatchDiff(createEmptyEditorLineDiff());
-            return;
-          }
-
-          if (this.baseSnapshot.availability !== "ready") {
-            this.dispatchDiff(createEmptyEditorLineDiff());
-            return;
-          }
-
-          let diff = createEmptyEditorLineDiff();
-          if (this.baseSnapshot.baseType !== "new") {
-            const currentText = normalizeEditorText(this.view.state.doc.toString());
-            diff = await buildGitEditorDiff(this.baseSnapshot.baseText, currentText, this.view.state.doc.lines);
-          }
-
-          if (requestId !== this.renderRequestId) {
-            return;
-          }
-
-          this.dispatchDiff(diff);
-        }
-
-        private dispatchDiff(diff: EditorLineDiff): void {
-          this.view.dispatch({
-            effects: setEditorDiffEffect.of(diff)
-          });
-        }
-      }
-    )
-  ];
-}
-
-function getEditorFilePath(view: EditorView): string | null {
-  const info = view.state.field(editorInfoField, false) as MarkdownFileInfo | undefined;
-  return normalizeLogicalPath(info?.file?.path ?? "") || null;
-}
-
-function buildGutterMarker(view: EditorView, lineNumber: number): GutterMarker | null {
-  const diff = view.state.field(editorDiffField, false);
-  if (!diff) {
-    return null;
-  }
-
-  const deletedAnchors = new Set(diff.deletedAnchors);
-  const status = diff.lineStatuses.get(lineNumber);
-  const deletedBefore = deletedAnchors.has(lineNumber);
-  const deletedAfter = lineNumber === view.state.doc.lines && deletedAnchors.has(lineNumber + 1);
-
-  if (!status && !deletedBefore && !deletedAfter) {
-    return null;
-  }
-
-  return new ChangeGutterMarker({
-    status,
-    deletedBefore,
-    deletedAfter
-  });
-}
-
-class ChangeGutterMarker extends GutterMarker {
-  constructor(
-    private readonly options: {
-      status?: EditorLineStatus;
-      deletedBefore?: boolean;
-      deletedAfter?: boolean;
-    }
-  ) {
-    super();
-  }
-
-  eq(other: ChangeGutterMarker): boolean {
-    return (
-      this.options.status === other.options.status &&
-      this.options.deletedBefore === other.options.deletedBefore &&
-      this.options.deletedAfter === other.options.deletedAfter
-    );
-  }
-
-  toDOM(): HTMLElement {
-    const marker = document.createElement("span");
-    marker.className = "ogfc-change-marker";
-
-    if (this.options.status) {
-      const lineMarker = document.createElement("span");
-      lineMarker.className = `ogfc-change-marker-line ogfc-change-marker-line-${this.options.status}`;
-      marker.appendChild(lineMarker);
-    }
-
-    if (this.options.deletedBefore) {
-      const triangle = document.createElement("span");
-      triangle.className = "ogfc-change-marker-deleted ogfc-change-marker-deleted-before";
-      marker.appendChild(triangle);
-    }
-
-    if (this.options.deletedAfter) {
-      const triangle = document.createElement("span");
-      triangle.className = "ogfc-change-marker-deleted ogfc-change-marker-deleted-after";
-      marker.appendChild(triangle);
-    }
-
-    return marker;
   }
 }
