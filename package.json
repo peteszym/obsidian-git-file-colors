@@ -1,14 +1,14 @@
 {
   "name": "git-file-explorer-colors",
   "version": "1.0.2",
-  "description": "Color Obsidian's File Explorer from Git status.",
+  "description": "Color Git-changed files, folders, and editor lines in Obsidian.",
   "main": "main.js",
   "packageManager": "npm@10.9.2",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production",
     "check": "tsc --noEmit",
-    "test": "tsc -p tsconfig.tests.json && node --test build-tests/tests/status-model.test.js",
+    "test": "tsc -p tsconfig.tests.json && node --test build-tests/tests/status-model.test.js build-tests/tests/line-diff.test.js",
     "sync:scratch": "bash scripts/sync-scratch-vault.sh",
     "validate": "npm run check && npm run test && npm run build",
     "version": "node version-bump.mjs && git add manifest.json versions.json"
@@ -26,6 +26,8 @@
     ]
   },
   "devDependencies": {
+    "@codemirror/state": "6.5.0",
+    "@codemirror/view": "6.38.6",
     "@types/node": "^22.14.1",
     "esbuild": "^0.25.2",
     "obsidian": "^1.7.2",

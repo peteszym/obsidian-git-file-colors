@@ -1,8 +1,8 @@
 # Obsidian Git File Explorer Colors
 
-Obsidian plugin for AI second-brain users that colors the File Explorer by Git status, helping you spot markdown changes instantly without turning Obsidian into a full IDE.
+Obsidian plugin for AI second-brain users that colors the File Explorer and marks changed editor lines by Git status, helping you spot markdown changes instantly without turning Obsidian into a full IDE.
 
-Git File Explorer Colors is a desktop-only, read-only Obsidian plugin for vaults that live inside a single Git repository. It colors file rows directly from Git status and rolls changed descendants up to folders using `deleted > modified > new` priority.
+Git File Explorer Colors is a desktop-only, read-only Obsidian plugin for vaults that live inside a single Git repository. It colors file rows directly from Git status, rolls changed descendants up to folders using `deleted > modified > new` priority, and shows IDE-style line indicators in the editor gutter.
 
 ![Git File Explorer Colors screenshot](assets/file-explorer-colors-screenshot.png)
 
@@ -12,6 +12,9 @@ Git File Explorer Colors is a desktop-only, read-only Obsidian plugin for vaults
 - Colors modified files in muted orange
 - Colors deleted paths as a folder signal in muted red
 - Rolls descendant changes up to parent folders
+- Marks added editor lines with a green bar
+- Marks modified editor lines with a yellow bar
+- Marks deleted line boundaries with a red triangle
 - Refreshes on vault create, modify, rename, and delete events
 - Includes a fallback polling refresh for external Git changes
 - Adds a manual `Refresh colors` command for recovery
@@ -32,6 +35,14 @@ This plugin does not stage, commit, or modify Git state. It only reads status an
 - `deleted`: deleted files, primarily shown through parent-folder rollups when the file row is no longer visible
 
 Folder priority is `deleted > modified > new`.
+
+Editor line indicators compare the current file with `HEAD`:
+
+- `new`: green gutter bar
+- `modified`: yellow gutter bar
+- `deleted`: red triangle at the nearest remaining line boundary
+
+Untracked and newly added files are shown as entirely new. Line indicators appear in source mode and Live Preview; reading mode has no source-line gutter.
 
 ## Installation
 
@@ -56,11 +67,12 @@ Until it is published, or if you want to install a specific build:
 
 ## Usage
 
-The plugin reads Git status from the current vault root, normalizes it to `new`, `modified`, and `deleted`, and applies those states to the File Explorer.
+The plugin reads Git status from the current vault root, normalizes it to `new`, `modified`, and `deleted`, and applies those states to the File Explorer and editor gutter.
 
 - Files are colored from their direct Git status
 - Folders are colored from descendant changes
 - Deleted files typically show up as red parent folders, because the deleted file row itself no longer exists in the tree
+- Open changed files show green additions, yellow modifications, and red deletion triangles against `HEAD`
 - External Git changes are picked up by the fallback timer or the `Refresh colors` command
 
 ## Troubleshooting
@@ -91,6 +103,7 @@ On Linux:
 
 - `Color file rows`
 - `Color folder rows`
+- `Show editor line indicators`
 - `New color`
 - `Modified color`
 - `Deleted color`

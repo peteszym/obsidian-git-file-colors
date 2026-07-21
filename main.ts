@@ -1,7 +1,16 @@
 import { execFile } from "child_process";
+import { RangeSet, RangeSetBuilder, StateEffect, StateField, type Text } from "@codemirror/state";
+import {
+  EditorView,
+  GutterMarker,
+  ViewPlugin,
+  type ViewUpdate,
+  gutter
+} from "@codemirror/view";
 import {
   App,
   FileSystemAdapter,
+  MarkdownView,
   Notice,
   Plugin,
   PluginSettingTab,
@@ -16,6 +25,12 @@ import {
   parsePorcelainRecords,
   type GitUiStatus
 } from "./src/status-model";
+import {
+  createAllNewLineChanges,
+  parseGitLineChanges,
+  type GitLineChanges,
+  type GitLineStatus
+} from "./src/line-diff";
 
 type SnapshotAvailability = "ready" | "no-repo" | "git-unavailable" | "error";
 type UnavailableSnapshot = Exclude<SnapshotAvailability, "ready">;
@@ -23,6 +38,7 @@ type UnavailableSnapshot = Exclude<SnapshotAvailability, "ready">;
 interface GitFileColorsSettings {
   fileColoring: boolean;
   folderColoring: boolean;
+  lineIndicators: boolean;
   newColor: string;
   modifiedColor: string;
   deletedColor: string;
@@ -36,9 +52,15 @@ interface GitSnapshot {
   error: string | null;
 }
 
+interface LineRefreshState {
+  timeoutId: number | null;
+  revision: number;
+}
+
 const DEFAULT_SETTINGS: GitFileColorsSettings = {
   fileColoring: true,
   folderColoring: true,
+  lineIndicators: true,
   newColor: "#6bbf7d",
   modifiedColor: "#c8a15a",
   deletedColor: "#d16b6b",
@@ -48,6 +70,8 @@ const DEFAULT_SETTINGS: GitFileColorsSettings = {
 const MIN_REFRESH_INTERVAL_MS = 5000;
 const REFRESH_DEBOUNCE_MS = 200;
 const DOM_SYNC_DEBOUNCE_MS = 50;
+const LINE_REFRESH_DEBOUNCE_MS = 350;
+const LINE_INDICATORS_ENABLED_CLASS = "ogfc-line-indicators-enabled";
 const STATUS_CLASSES = ["ogfc-status-new", "ogfc-status-modified", "ogfc-status-deleted"];
 const FILE_EXPLORER_PATH_SELECTOR = [
   ".tree-item[data-path]",
@@ -55,6 +79,30 @@ const FILE_EXPLORER_PATH_SELECTOR = [
   ".nav-file-title[data-path]",
   ".nav-folder-title[data-path]"
 ].join(", ");
+const EMPTY_LINE_CHANGES: GitLineChanges = {
+  changedLines: [],
+  deletedAfterLines: []
+};
+const setGitLineChangesEffect = StateEffect.define<GitLineChanges>();
+const gitLineMarkerField = StateField.define<RangeSet<GutterMarker>>({
+  create: () => RangeSet.empty,
+  update: (markers, transaction) => {
+    let nextMarkers = markers.map(transaction.changes);
+
+    for (const effect of transaction.effects) {
+      if (effect.is(setGitLineChangesEffect)) {
+        nextMarkers = buildGitLineMarkers(effect.value, transaction.state.doc);
+      }
+    }
+
+    return nextMarkers;
+  }
+});
+const gitLineGutter = gutter({
+  class: "ogfc-line-gutter",
+  markers: (view) => view.state.field(gitLineMarkerField),
+  initialSpacer: () => GIT_LINE_GUTTER_SPACER
+});
 
 export default class GitFileExplorerColorsPlugin extends Plugin {
   settings: GitFileColorsSettings = DEFAULT_SETTINGS;
@@ -68,10 +116,13 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
   private refreshQueued = false;
   private noticeQueued = false;
   private lastAutomaticNoticeKey: string | null = null;
+  private editorViews = new Set<EditorView>();
+  private lineRefreshByView = new Map<EditorView, LineRefreshState>();
 
   async onload(): Promise<void> {
     await this.loadSettings();
     this.applyCssVariables();
+    this.registerEditorExtension(createGitLineGutterExtension(this));
 
     this.addCommand({
       id: "refresh-git-colors",
@@ -87,6 +138,13 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
       this.app.workspace.on("layout-change", () => {
         this.syncExplorerObservers();
         this.scheduleDomSync();
+        this.scheduleAllLineRefreshes();
+      })
+    );
+
+    this.registerEvent(
+      this.app.workspace.on("file-open", () => {
+        this.scheduleAllLineRefreshes();
       })
     );
 
@@ -120,6 +178,7 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
 
     this.disconnectExplorerObservers();
     this.clearExplorerClasses();
+    this.clearLineRefreshes();
     this.clearCssVariables();
   }
 
@@ -151,6 +210,7 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
     }
 
     this.scheduleDomSync();
+    this.scheduleAllLineRefreshes();
   }
 
   private getVaultBasePath(): string | null {
@@ -217,6 +277,7 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
         this.snapshot = nextSnapshot;
         this.syncExplorerObservers();
         this.applySnapshotToExplorers();
+        this.scheduleAllLineRefreshes();
 
         if (showNotice) {
           this.showRefreshNotice(nextSnapshot);
@@ -231,6 +292,7 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
       console.error("[git-file-explorer-colors] refresh failed", reason, error);
       this.snapshot = createEmptySnapshot("error", "Unexpected refresh failure.");
       this.applySnapshotToExplorers();
+      this.scheduleAllLineRefreshes();
 
       if (showNotice) {
         new Notice("Git colors refresh failed.");
@@ -276,6 +338,7 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
 
   private applyCssVariables(): void {
     const root = activeDocument.body;
+    root.classList.toggle(LINE_INDICATORS_ENABLED_CLASS, this.settings.lineIndicators);
     root.style.setProperty("--ogfc-color-new", this.settings.newColor);
     root.style.setProperty("--ogfc-color-modified", this.settings.modifiedColor);
     root.style.setProperty("--ogfc-color-deleted", this.settings.deletedColor);
@@ -283,6 +346,7 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
 
   private clearCssVariables(): void {
     const root = activeDocument.body;
+    root.classList.remove(LINE_INDICATORS_ENABLED_CLASS);
     root.style.removeProperty("--ogfc-color-new");
     root.style.removeProperty("--ogfc-color-modified");
     root.style.removeProperty("--ogfc-color-deleted");
@@ -360,6 +424,143 @@ export default class GitFileExplorerColorsPlugin extends Plugin {
       }
     }
   }
+
+  trackEditorView(view: EditorView): void {
+    this.editorViews.add(view);
+    this.syncEditorDocumentStyles(view);
+    this.scheduleLineRefresh(view, 0);
+  }
+
+  handleEditorViewUpdate(update: ViewUpdate): void {
+    if (update.docChanged) {
+      this.scheduleLineRefresh(update.view, LINE_REFRESH_DEBOUNCE_MS);
+    }
+  }
+
+  untrackEditorView(view: EditorView): void {
+    this.editorViews.delete(view);
+    const refreshState = this.lineRefreshByView.get(view);
+    if (refreshState?.timeoutId !== null && refreshState?.timeoutId !== undefined) {
+      window.clearTimeout(refreshState.timeoutId);
+    }
+    this.lineRefreshByView.delete(view);
+  }
+
+  private scheduleAllLineRefreshes(): void {
+    for (const view of this.editorViews) {
+      this.syncEditorDocumentStyles(view);
+      this.scheduleLineRefresh(view, 0);
+    }
+  }
+
+  private scheduleLineRefresh(view: EditorView, delayMs: number): void {
+    if (!this.editorViews.has(view)) {
+      return;
+    }
+
+    const previousState = this.lineRefreshByView.get(view);
+    if (previousState?.timeoutId !== null && previousState?.timeoutId !== undefined) {
+      window.clearTimeout(previousState.timeoutId);
+    }
+
+    const revision = (previousState?.revision ?? 0) + 1;
+    const timeoutId = window.setTimeout(() => {
+      const currentState = this.lineRefreshByView.get(view);
+      if (!currentState || currentState.revision !== revision) {
+        return;
+      }
+
+      currentState.timeoutId = null;
+      void this.refreshLineIndicators(view, revision);
+    }, delayMs);
+
+    this.lineRefreshByView.set(view, { timeoutId, revision });
+  }
+
+  private async refreshLineIndicators(view: EditorView, revision: number): Promise<void> {
+    if (!this.settings.lineIndicators || this.snapshot.availability !== "ready") {
+      this.applyLineChanges(view, revision, EMPTY_LINE_CHANGES);
+      return;
+    }
+
+    const vaultPath = this.getEditorVaultPath(view);
+    if (!vaultPath) {
+      this.applyLineChanges(view, revision, EMPTY_LINE_CHANGES);
+      return;
+    }
+
+    const status = this.snapshot.files.get(vaultPath);
+    if (!status || status === "deleted") {
+      this.applyLineChanges(view, revision, EMPTY_LINE_CHANGES);
+      return;
+    }
+
+    if (status === "new") {
+      this.applyLineChanges(view, revision, createAllNewLineChanges(view.state.doc.lines));
+      return;
+    }
+
+    try {
+      const changes = await this.provider.readLineChanges(vaultPath);
+      this.applyLineChanges(view, revision, changes);
+    } catch (error) {
+      console.error("[git-file-explorer-colors] line diff failed", vaultPath, error);
+      this.applyLineChanges(view, revision, EMPTY_LINE_CHANGES);
+    }
+  }
+
+  private applyLineChanges(view: EditorView, revision: number, changes: GitLineChanges): void {
+    const refreshState = this.lineRefreshByView.get(view);
+    if (!this.editorViews.has(view) || !refreshState || refreshState.revision !== revision) {
+      return;
+    }
+
+    view.dispatch({
+      effects: setGitLineChangesEffect.of(changes)
+    });
+  }
+
+  private getEditorVaultPath(view: EditorView): string | null {
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      if (!(leaf.view instanceof MarkdownView) || !leaf.view.containerEl.contains(view.dom)) {
+        continue;
+      }
+
+      return leaf.view.file ? normalizeLogicalPath(leaf.view.file.path) : null;
+    }
+
+    return null;
+  }
+
+  private clearLineRefreshes(): void {
+    const documents = new Set<Document>();
+    for (const view of this.editorViews) {
+      documents.add(view.dom.ownerDocument);
+    }
+    documents.forEach((document) => {
+      document.body.classList.remove(LINE_INDICATORS_ENABLED_CLASS);
+      document.body.style.removeProperty("--ogfc-color-new");
+      document.body.style.removeProperty("--ogfc-color-modified");
+      document.body.style.removeProperty("--ogfc-color-deleted");
+    });
+
+    for (const state of this.lineRefreshByView.values()) {
+      if (state.timeoutId !== null) {
+        window.clearTimeout(state.timeoutId);
+      }
+    }
+
+    this.lineRefreshByView.clear();
+    this.editorViews.clear();
+  }
+
+  private syncEditorDocumentStyles(view: EditorView): void {
+    const root = view.dom.ownerDocument.body;
+    root.classList.toggle(LINE_INDICATORS_ENABLED_CLASS, this.settings.lineIndicators);
+    root.style.setProperty("--ogfc-color-new", this.settings.newColor);
+    root.style.setProperty("--ogfc-color-modified", this.settings.modifiedColor);
+    root.style.setProperty("--ogfc-color-deleted", this.settings.deletedColor);
+  }
 }
 
 class GitStatusProvider {
@@ -400,6 +601,33 @@ class GitStatusProvider {
     }
   }
 
+  async readLineChanges(vaultPath: string): Promise<GitLineChanges> {
+    const vaultBasePath = this.getVaultBasePath();
+    if (!vaultBasePath) {
+      return EMPTY_LINE_CHANGES;
+    }
+
+    const repoInfo = await this.resolveRepoInfo(vaultBasePath);
+    if (repoInfo.availability !== "ready") {
+      return EMPTY_LINE_CHANGES;
+    }
+
+    const logicalPath = normalizeLogicalPath(vaultPath);
+    if (!logicalPath || logicalPath === ".." || logicalPath.startsWith("../")) {
+      return EMPTY_LINE_CHANGES;
+    }
+
+    const repoRelativePath = repoInfo.vaultPrefix
+      ? `${repoInfo.vaultPrefix}/${logicalPath}`
+      : logicalPath;
+    const output = await runGit(
+      ["diff", "--no-ext-diff", "--no-color", "--unified=0", "HEAD", "--", repoRelativePath],
+      repoInfo.repoRoot
+    );
+
+    return parseGitLineChanges(output);
+  }
+
   private async resolveRepoInfo(
     vaultBasePath: string
   ): Promise<
@@ -429,6 +657,137 @@ class GitStatusProvider {
   }
 }
 
+class GitLineGutterMarker extends GutterMarker {
+  readonly elementClass = "ogfc-line-gutter-element";
+
+  constructor(
+    private readonly status: GitLineStatus | null,
+    private readonly deletedBefore: boolean,
+    private readonly deletedAfter: boolean
+  ) {
+    super();
+  }
+
+  eq(other: GutterMarker): boolean {
+    return (
+      other instanceof GitLineGutterMarker &&
+      other.status === this.status &&
+      other.deletedBefore === this.deletedBefore &&
+      other.deletedAfter === this.deletedAfter
+    );
+  }
+
+  toDOM(view: EditorView): Node {
+    const marker = view.dom.ownerDocument.createElement("span");
+    marker.classList.add("ogfc-line-marker");
+
+    if (this.status) {
+      marker.classList.add(`ogfc-line-marker-${this.status}`);
+    }
+    if (this.deletedBefore) {
+      marker.classList.add("ogfc-line-marker-deleted-before");
+    }
+    if (this.deletedAfter) {
+      marker.classList.add("ogfc-line-marker-deleted-after");
+    }
+
+    return marker;
+  }
+}
+
+class GitLineGutterSpacer extends GutterMarker {
+  readonly elementClass = "ogfc-line-gutter-spacer";
+
+  eq(other: GutterMarker): boolean {
+    return other instanceof GitLineGutterSpacer;
+  }
+
+  toDOM(view: EditorView): Node {
+    const spacer = view.dom.ownerDocument.createElement("span");
+    spacer.className = "ogfc-line-marker-spacer";
+    return spacer;
+  }
+}
+
+const GIT_LINE_GUTTER_SPACER = new GitLineGutterSpacer();
+
+function createGitLineGutterExtension(plugin: GitFileExplorerColorsPlugin) {
+  const lifecycle = ViewPlugin.define((view) => {
+    plugin.trackEditorView(view);
+
+    return {
+      update(update: ViewUpdate): void {
+        plugin.handleEditorViewUpdate(update);
+      },
+      destroy(): void {
+        plugin.untrackEditorView(view);
+      }
+    };
+  });
+
+  return [gitLineMarkerField, gitLineGutter, lifecycle];
+}
+
+function buildGitLineMarkers(changes: GitLineChanges, doc: Text): RangeSet<GutterMarker> {
+  interface MarkerParts {
+    status: GitLineStatus | null;
+    deletedBefore: boolean;
+    deletedAfter: boolean;
+  }
+
+  const markersByLine = new Map<number, MarkerParts>();
+  const getMarker = (line: number): MarkerParts => {
+    const existing = markersByLine.get(line);
+    if (existing) {
+      return existing;
+    }
+
+    const marker: MarkerParts = {
+      status: null,
+      deletedBefore: false,
+      deletedAfter: false
+    };
+    markersByLine.set(line, marker);
+    return marker;
+  };
+
+  for (const changedLine of changes.changedLines) {
+    if (!Number.isInteger(changedLine.line) || changedLine.line < 1 || changedLine.line > doc.lines) {
+      continue;
+    }
+
+    const marker = getMarker(changedLine.line);
+    if (marker.status !== "modified") {
+      marker.status = changedLine.status;
+    }
+  }
+
+  for (const rawAfterLine of changes.deletedAfterLines) {
+    if (!Number.isFinite(rawAfterLine)) {
+      continue;
+    }
+
+    const afterLine = Math.floor(rawAfterLine);
+    if (afterLine <= 0) {
+      getMarker(1).deletedBefore = true;
+    } else {
+      getMarker(Math.min(afterLine, doc.lines)).deletedAfter = true;
+    }
+  }
+
+  const builder = new RangeSetBuilder<GutterMarker>();
+  for (const [line, marker] of [...markersByLine.entries()].sort(([left], [right]) => left - right)) {
+    const position = doc.line(line).from;
+    builder.add(
+      position,
+      position,
+      new GitLineGutterMarker(marker.status, marker.deletedBefore, marker.deletedAfter)
+    );
+  }
+
+  return builder.finish();
+}
+
 class GitFileColorsSettingTab extends PluginSettingTab {
   constructor(app: App, private readonly plugin: GitFileExplorerColorsPlugin) {
     super(app, plugin);
@@ -453,6 +812,15 @@ class GitFileColorsSettingTab extends PluginSettingTab {
       .addToggle((toggle) => {
         toggle.setValue(this.plugin.settings.folderColoring).onChange(async (value) => {
           await this.plugin.updateSettings({ folderColoring: value });
+        });
+      });
+
+    new Setting(containerEl)
+      .setName("Show editor line indicators")
+      .setDesc("Show green additions, yellow modifications, and red deletion markers in the editor gutter.")
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.settings.lineIndicators).onChange(async (value) => {
+          await this.plugin.updateSettings({ lineIndicators: value });
         });
       });
 
@@ -546,6 +914,7 @@ function normalizeSettings(input: unknown): GitFileColorsSettings {
   return {
     fileColoring: data.fileColoring ?? DEFAULT_SETTINGS.fileColoring,
     folderColoring: data.folderColoring ?? DEFAULT_SETTINGS.folderColoring,
+    lineIndicators: data.lineIndicators ?? DEFAULT_SETTINGS.lineIndicators,
     newColor: normalizeColorValue(data.newColor ?? DEFAULT_SETTINGS.newColor, DEFAULT_SETTINGS.newColor),
     modifiedColor: normalizeColorValue(
       data.modifiedColor ?? DEFAULT_SETTINGS.modifiedColor,

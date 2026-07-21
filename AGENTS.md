@@ -7,15 +7,16 @@ This file is the durable collaboration context for this repository. Future tools
 - Public repo: `peteszym/obsidian-git-file-colors`
 - Plugin name: `Git File Explorer Colors`
 - Plugin ID: `git-file-explorer-colors`
-- Scope: desktop-only, read-only, single-repo Git status coloring for Obsidian's File Explorer
+- Scope: desktop-only, read-only, single-repo Git status coloring for Obsidian's File Explorer and editor gutter
 
 ## Product Guardrails
 
-- Keep the plugin lightweight and focused on orientation in the File Explorer.
+- Keep the plugin lightweight and focused on orientation in the File Explorer and editor gutter.
 - Do not turn the plugin into a full Git client.
 - Preserve the status vocabulary: `new`, `modified`, `deleted`.
 - Preserve folder rollup priority: `deleted > modified > new`.
 - Deleted files should normally surface as folder signals when the file row no longer exists.
+- Preserve editor gutter signals: green additions, yellow modifications, and red deletion triangles.
 - Favor subtle, readable colors over loud IDE-style decoration.
 
 ## Repo Conventions

@@ -7,8 +7,9 @@ The v1 plugin is implemented and working locally:
 - Git status is normalized to `new`, `modified`, and `deleted`
 - File rows are colored from direct Git status
 - Folder rows roll up descendant status with `deleted > modified > new`
+- Editor gutters show green additions, yellow modifications, and red deletion triangles against `HEAD`
 - Refresh runs on vault events, a fallback timer, and a manual command
-- Minimal settings exist for file coloring, folder coloring, colors, and refresh interval
+- Minimal settings exist for file coloring, folder coloring, editor line indicators, colors, and refresh interval
 
 ## Next Up
 
@@ -29,6 +30,7 @@ The v1 plugin is implemented and working locally:
 - Optional icon tinting if text-only color feels too subtle
 - Additional UI polish for different Obsidian themes
 - Broader automated coverage around File Explorer DOM matching
+- Optional hover previews for deleted or replaced lines
 - Performance profiling for very large vaults
 
 ## Non-Goals For v1
