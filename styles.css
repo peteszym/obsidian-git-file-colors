@@ -31,3 +31,68 @@
 .workspace-leaf-content[data-type="file-explorer"] .nav-folder-title-content {
   transition: color 140ms ease;
 }
+
+body:not(.ogfc-line-indicators-enabled) .cm-gutter.ogfc-line-gutter {
+  display: none;
+}
+
+body.ogfc-line-indicators-enabled .markdown-source-view.mod-cm6 .cm-gutter.ogfc-line-gutter {
+  min-width: 8px;
+  width: 8px;
+}
+
+.markdown-source-view.mod-cm6 .ogfc-line-gutter-element,
+.markdown-source-view.mod-cm6 .ogfc-line-gutter-spacer {
+  box-sizing: border-box;
+  min-width: 8px;
+  padding: 0;
+  position: relative;
+  width: 8px;
+}
+
+.markdown-source-view.mod-cm6 .ogfc-line-marker,
+.markdown-source-view.mod-cm6 .ogfc-line-marker-spacer {
+  display: block;
+  height: 100%;
+  min-height: 1em;
+  position: relative;
+  width: 8px;
+}
+
+.markdown-source-view.mod-cm6 .ogfc-line-marker-new::before,
+.markdown-source-view.mod-cm6 .ogfc-line-marker-modified::before {
+  border-radius: 1px;
+  bottom: 0;
+  content: "";
+  left: 2px;
+  position: absolute;
+  top: 0;
+  width: 3px;
+}
+
+.markdown-source-view.mod-cm6 .ogfc-line-marker-new::before {
+  background-color: var(--ogfc-color-new);
+}
+
+.markdown-source-view.mod-cm6 .ogfc-line-marker-modified::before {
+  background-color: var(--ogfc-color-modified);
+}
+
+.markdown-source-view.mod-cm6 .ogfc-line-marker-deleted-before::after,
+.markdown-source-view.mod-cm6 .ogfc-line-marker-deleted-after::after {
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid var(--ogfc-color-deleted);
+  border-top: 4px solid transparent;
+  content: "";
+  left: 1px;
+  position: absolute;
+  z-index: 2;
+}
+
+.markdown-source-view.mod-cm6 .ogfc-line-marker-deleted-before::after {
+  top: -4px;
+}
+
+.markdown-source-view.mod-cm6 .ogfc-line-marker-deleted-after::after {
+  bottom: -4px;
+}
