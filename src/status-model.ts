@@ -42,6 +42,11 @@ export function parsePorcelainRecords(output: Buffer | string): PorcelainRecord[
   return records;
 }
 
+export function parseGitPrefix(output: Buffer | string): string {
+  const text = typeof output === "string" ? output : output.toString("utf8");
+  return normalizeLogicalPath(text);
+}
+
 export function normalizeRecordStatus(code: string): GitUiStatus | null {
   if (code === "!!") {
     return null;
@@ -110,26 +115,6 @@ export function buildFolderStatuses(fileStatuses: Map<string, GitUiStatus>): Map
   }
 
   return folderStatuses;
-}
-
-export function getVaultPrefix(repoRoot: string, vaultBasePath: string): string | null {
-  const rawRelativePath = path.relative(repoRoot, vaultBasePath);
-
-  if (!rawRelativePath) {
-    return "";
-  }
-
-  const relativePath = normalizeRelativePath(rawRelativePath);
-
-  if (!relativePath || relativePath === ".") {
-    return "";
-  }
-
-  if (relativePath.startsWith("../")) {
-    return null;
-  }
-
-  return relativePath;
 }
 
 export function toVaultRelativePath(repoRelativePath: string, vaultPrefix: string): string | null {

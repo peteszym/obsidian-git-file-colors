@@ -11,8 +11,8 @@ import {
 import {
   applyPorcelainRecord,
   buildFolderStatuses,
-  getVaultPrefix,
   normalizeLogicalPath,
+  parseGitPrefix,
   parsePorcelainRecords,
   type GitUiStatus
 } from "./src/status-model";
@@ -407,16 +407,10 @@ class GitStatusProvider {
     | { availability: UnavailableSnapshot; error: string | null }
   > {
     try {
-      const output = await runGit(["rev-parse", "--show-toplevel"], vaultBasePath);
-      const repoRoot = output.toString("utf8").trim().replace(/\\/g, "/");
-      const vaultPrefix = getVaultPrefix(repoRoot, vaultBasePath);
-
-      if (vaultPrefix === null) {
-        return {
-          availability: "error",
-          error: "Vault path is outside the resolved Git root."
-        };
-      }
+      const repoRootOutput = await runGit(["rev-parse", "--show-toplevel"], vaultBasePath);
+      const prefixOutput = await runGit(["rev-parse", "--show-prefix"], vaultBasePath);
+      const repoRoot = repoRootOutput.toString("utf8").trim().replace(/\\/g, "/");
+      const vaultPrefix = parseGitPrefix(prefixOutput);
 
       return {
         availability: "ready",

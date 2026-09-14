@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
   applyPorcelainRecord,
   buildFolderStatuses,
-  getVaultPrefix,
   normalizeLogicalPath,
   normalizeRecordStatus,
+  parseGitPrefix,
   parsePorcelainRecords,
   toVaultRelativePath
 } from "../src/status-model";
@@ -49,22 +53,52 @@ test("buildFolderStatuses rolls up descendant state using deleted > modified > n
   assert.equal(folders.get("Test"), "new");
 });
 
-test("getVaultPrefix returns empty string when the vault is the repo root", () => {
-  assert.equal(
-    getVaultPrefix("/Users/peter/Code/obsidian-git-file-colors/tmp/scratch-vault", "/Users/peter/Code/obsidian-git-file-colors/tmp/scratch-vault"),
-    ""
-  );
+test("parseGitPrefix handles repo-root and nested vault output", () => {
+  assert.equal(parseGitPrefix("\n"), "");
+  assert.equal(parseGitPrefix(Buffer.from("Documentation/\n", "utf8")), "Documentation");
 });
 
-test("getVaultPrefix handles nested vaults and rejects paths outside the repo", () => {
-  assert.equal(
-    getVaultPrefix("/repo", "/repo/vault"),
-    "vault"
-  );
-  assert.equal(
-    getVaultPrefix("/repo", "/elsewhere/vault"),
-    null
-  );
+test("git reports the correct vault prefix when the vault is opened through a symlink", {
+  skip: process.platform === "win32" ? "Directory symlink creation may require elevated privileges." : false
+}, () => {
+  const fixtureRoot = mkdtempSync(path.join(tmpdir(), "ogfc-symlink-test-"));
+  const repoRoot = path.join(fixtureRoot, "repo");
+  const vaultDirectory = path.join(repoRoot, "Documentation");
+  const symlinkParent = path.join(fixtureRoot, "Notes");
+  const symlinkedVault = path.join(symlinkParent, "MyVault");
+
+  try {
+    mkdirSync(vaultDirectory, { recursive: true });
+    mkdirSync(symlinkParent, { recursive: true });
+    execFileSync("git", ["init", "-q"], { cwd: repoRoot });
+    symlinkSync(vaultDirectory, symlinkedVault, "dir");
+    writeFileSync(path.join(vaultDirectory, "note.md"), "hello\n", "utf8");
+
+    const resolvedRepoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: symlinkedVault
+    }).toString("utf8").trim();
+    const prefixOutput = execFileSync("git", ["rev-parse", "--show-prefix"], {
+      cwd: symlinkedVault
+    });
+    const statusOutput = execFileSync(
+      "git",
+      ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      { cwd: resolvedRepoRoot }
+    );
+    const statuses = new Map<string, "new" | "modified" | "deleted">();
+    const vaultPrefix = parseGitPrefix(prefixOutput);
+
+    for (const record of parsePorcelainRecords(statusOutput)) {
+      applyPorcelainRecord(statuses, record, vaultPrefix);
+    }
+
+    assert.equal(realpathSync(resolvedRepoRoot), realpathSync(repoRoot));
+    assert.match(path.relative(resolvedRepoRoot, symlinkedVault), /^\.\.[/\\]/);
+    assert.equal(vaultPrefix, "Documentation");
+    assert.equal(statuses.get("note.md"), "new");
+  } finally {
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
 });
 
 test("toVaultRelativePath maps repo paths into vault-relative paths", () => {
